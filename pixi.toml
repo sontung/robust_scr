@@ -1,0 +1,35 @@
+[workspace]
+authors = ["sontung <>"]
+channels = ["pytorch", "rapidsai", "conda-forge", "nvidia"]
+name = "env_pixi"
+platforms = ["linux-64"]
+version = "0.1.0"
+
+[tasks]
+simple = "echo This is a simple task"
+
+[dependencies]
+python = "3.10.*"
+pytorch = "2.5.1.*"
+torchvision = "0.20.1.*"
+pytorch-cuda = "12.4.*"
+cuml = "25.02.*"
+pytorch-metric-learning = "*"
+h5py = "*"
+pykdtree = "*"
+poselib = "*"
+scikit-image = "*"
+scikit-learn = "*"
+python-lmdb = "*"
+pip = ">=25.1.1,<26"
+imagesize = ">=1.4.1,<2"
+quaternion = ">=2024.0.10,<2025"
+
+[pypi-dependencies]
+torch_geometric = "*"
+opencv-python = "*"
+faiss-gpu = "*"
+nanopq = "*"
+kornia = "*"
+open3d = "*"
+pycolmap = "*"

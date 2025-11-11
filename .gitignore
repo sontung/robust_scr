@@ -1,0 +1,32 @@
+__pycache__/
+.idea/
+.vscode/
+*/*.png
+*/*.json
+*/*.pdf
+*.pt
+*/*.pkl
+datasets/*
+# Dataset files.
+trained_models/*
+datasets/7scenes_*
+datasets/12scenes_*
+datasets/Cambridge_*
+datasets/wayspots_*
+datasets/pgt_*
+datasets/visloc_pseudo_gt_limitations
+datasets/aachen
+datasets/aachen_source
+# Outputs.
+outputs/*
+output/
+checkpoints/
+debug/
+CVPR23_DeitS_Rerank.pth
+*.lprof
+*.json
+*.png
+results/*
+*.h5
+*.txt
+third_party/*
