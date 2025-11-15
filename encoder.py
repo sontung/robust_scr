@@ -27,11 +27,11 @@ from kornia.feature.dedode.dedode_models import get_descriptor, get_detector
 from kornia.feature.dedode.utils import sample_keypoints
 from kornia.geometry.conversions import denormalize_pixel_coordinates
 from torch import nn
-from lightglue import ALIKED
+# from lightglue import ALIKED
 from config_classes import InstantiateConfig
-from d2net_all import _D2Net, process_multiscale
+# from d2net_all import _D2Net, process_multiscale
 from dataset import PreprocessConfig
-from superpoint_all import SuperPoint
+# from superpoint_all import SuperPoint
 
 
 @dataclass
@@ -51,21 +51,6 @@ class DedodeEncoderConfig(EncoderConfig):
     descriptor: str = "B"
 
     k: int = 5000
-
-
-@dataclass
-class D2EncoderConfig(EncoderConfig):
-    _target: Type = field(default_factory=lambda: D2Encoder)
-
-
-@dataclass
-class SuperPointEncoderConfig(EncoderConfig):
-    _target: Type = field(default_factory=lambda: SuperPointEncoder)
-
-
-@dataclass
-class AlikedEncoderConfig(EncoderConfig):
-    _target: Type = field(default_factory=lambda: AlikedEncoder)
 
 
 urls = {
