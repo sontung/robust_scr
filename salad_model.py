@@ -275,6 +275,7 @@ class FullModel(nn.Module):
 
         temp_net = self.encoder.model.blocks[-self.encoder.num_trainable_blocks :]
         temp_net2 = self.encoder.model.norm
+        os.makedirs("checkpoints", exist_ok=True)
         torch.save(self.agg.state_dict(), "checkpoints/t1.pth")
         torch.save(temp_net.state_dict(), "checkpoints/t2.pth")
         torch.save(temp_net2.state_dict(), "checkpoints/t3.pth")
