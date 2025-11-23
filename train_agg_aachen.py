@@ -156,7 +156,7 @@ def main_loop():
     margin_t = args.margin_t
     graph_file = str(ds_path / "train/pose_overlap.npz")
 
-    loss = ContrastiveLoss(margin_t, binary=False, cosine=cosine)
+    loss = ContrastiveLoss(margin_t, binary=True, cosine=cosine)
     print(f"Using loss with margin {margin_t}")
 
     loss.cuda()
