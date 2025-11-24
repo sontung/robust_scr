@@ -1,10 +1,10 @@
 #!/bin/bash -l
-#PBS -N aachen
+#PBS -N aachen_noise
 #PBS -l select=1:ncpus=20:ngpus=1:mem=50GB:gpu_id=H100
 #PBS -l walltime=48:00:00
 #PBS -j oe
 
-set -e  # Exit on error
+#set -e  # Exit on error
 
 
 SCENE_PATH=../scrstudio_exp/data/data/aachen
