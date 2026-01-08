@@ -227,7 +227,7 @@ def main(ds_main_dir, save_dir):
         "snow",
         "sun",
     ]
-    root = save_dir
+    root = Path(save_dir)
     root.mkdir(parents=True, exist_ok=True)
 
     for c in conditions:
