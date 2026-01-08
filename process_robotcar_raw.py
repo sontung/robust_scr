@@ -14,7 +14,7 @@ from io import BytesIO
 import imagesize
 import quaternion
 
-from ace_util import read_nvm_file
+from utils import read_nvm_file
 from dataset import LMDBReaderConfig
 
 
