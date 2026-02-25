@@ -107,10 +107,10 @@ def main(ds_main_dir, save_dir):
     # ds_main_dir = (
     #     "/home/n11373598/hpc-home/work/descriptor-disambiguation/datasets/aachen_v1.1"
     # )
-    image_folder = f"{ds_main_dir}/images_upright"
-    recon_file = f"{ds_main_dir}/3D-models/aachen_v_1_1/aachen_v_1_1.nvm"
+    image_folder = f"{ds_main_dir}/images/images_upright"
+    recon_file = f"{ds_main_dir}/3D-models/aachen_cvpr2018_db.nvm"
 
-    db_file = f"{ds_main_dir}/3D-models/aachen_v_1_1/database_intrinsics_v1_1.txt"
+    db_file = f"{ds_main_dir}/3D-models/database_intrinsics.txt"
     day_file = f"{ds_main_dir}/queries/day_time_queries_with_intrinsics.txt"
     night_file = f"{ds_main_dir}/queries/night_time_queries_with_intrinsics.txt"
 

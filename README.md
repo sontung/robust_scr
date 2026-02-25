@@ -1,3 +1,5 @@
+# [WACV 2026] Robust Scene Coordinate Regression via Geometrically-Consistent Global Descriptors
+### [[Paper](https://arxiv.org/abs/2512.17226)] [[Supp. mat.]()] [[Video]()]
 
 # Installation
 ### If you are using [Pixi](https://pixi.sh/latest/installation/):

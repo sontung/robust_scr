@@ -158,7 +158,7 @@ def parse_nvm_intrinsics(image_folder, name_id, ds):
     for name in tqdm(ds):
         # h, w = imagesize.get(name)
         name = str(name).replace(image_folder + "/", "")
-        cam_id = name.split("/")[1]
+        cam_id = name.split("/")[-2]
         f, cx, cy = dict_[cam_id]
         out_line = f"{name} SIMPLE_RADIAL {1024} {1024} {f} {cx} {cy} {0.0}"
         lines.append(out_line)
@@ -266,20 +266,15 @@ def main(ds_main_dir, save_dir):
     test_dir.mkdir(exist_ok=True)
     train_dir.mkdir(exist_ok=True)
     cmd = f"colmap image_undistorter_standalone --input_file intrinsics_train.txt --image_path {image_folder} --output_path {root}/train/rgb"
-    run_command(cmd, verbose=True)
+    # run_command(cmd, verbose=True)
 
     cmd = f"colmap image_undistorter_standalone --input_file intrinsics_test.txt --image_path {image_folder} --output_path {root}/test/rgb"
-    run_command(cmd, verbose=True)
+    # run_command(cmd, verbose=True)
 
     # create folders (colmap will not create them)
     folder2lmdb(test_dir / "rgb", test_dir / "rgb_lmdb")
-
-    # if not os.path.exists(test_dir / "rgb_lmdb"):
-    #     folder2lmdb(test_dir / "rgb", test_dir / "rgb_lmdb")
-    if not os.path.exists(train_dir / "rgb_lmdb"):
-        folder2lmdb(train_dir / "rgb", train_dir / "rgb_lmdb")
-    if not os.path.exists(train_dir / "image_shapes.npy"):
-        lmdb_image_shapes(train_dir)
+    folder2lmdb(train_dir / "rgb", train_dir / "rgb_lmdb")
+    lmdb_image_shapes(train_dir)
 
     ts2cond = {}
     for condition in conditions:
