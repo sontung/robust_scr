@@ -1,20 +1,27 @@
-#!/bin/bash -l
-#PBS -N aachen
-#PBS -l select=1:ncpus=20:ngpus=1:mem=50GB:gpu_id=H100
-#PBS -l walltime=48:00:00
-#PBS -j oe
+#!/bin/bash
+#SBATCH --job-name=scr_exp
+#SBATCH --partition=main
+#SBATCH --nodelist=worker-4
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --gpus=nvidia_h100_80gb_hbm3:y
+#SBATCH --cpus-per-task=10
+#SBATCH --mem=64G
+#SBATCH --time=24:00:00
+#SBATCH --output=%3j_%x.out
+#SBATCH --error=%3j_%x.err
 
-set -e  # Exit on error
+SCENE_PATH=/mnt/data/sftp/data/tungns30/aachen10
 
+cd /home/tungns30/robust_scr
 
-SCENE_PATH=../scrstudio_exp/data/data/aachen
+scr-download-data aachen
+/home/tungns30/.pixi/bin/pixi run scr-overlap-score --data $SCENE_PATH/train --max_depth 50
+/home/tungns30/.pixi/bin/pixi run scr-encoding-pca dedode --encoder.detector L --encoder.descriptor B --n_components 128 --data $SCENE_PATH
 
-cd /home/n11373598/work/robust_scr
-
-
-/home/n11373598/.pixi/bin/pixi run python train_agg_aachen.py $SCENE_PATH 0 desc_aachen0 64 10000 0 16 3e-3 9e-10 1 0 || {
+/home/tungns30/.pixi/bin/pixi run python train_agg_aachen.py $SCENE_PATH 0 desc_aachen0 64 10000 0 16 3e-3 9e-10 1 0 || {
   echo "Python crashed!"
   exit 1
 }
 
-/home/n11373598/.pixi/bin/pixi run python trainer_with_aachen.py  --scene $SCENE_PATH --global_feat 1 --use_aug 1 --iter_output 1000000 --depth_target 12 --feat_name checkpoints/desc_aachen0.npy  --feat_name_test checkpoints/desc_aachen0_test.npy   --training_buffer_size 128000000 --max_iterations 100000 --batch_size 320000 --graph_aug 1 --use_half 1 --focus_tune 1 --output_map_file head_main.pth
+/home/tungns30/.pixi/bin/pixi run python trainer_with_aachen.py  --scene $SCENE_PATH --global_feat 1 --use_aug 1 --iter_output 1000000 --depth_target 12 --feat_name checkpoints/desc_aachen0.npy  --feat_name_test checkpoints/desc_aachen0_test.npy   --training_buffer_size 128000000 --max_iterations 100000 --batch_size 320000 --graph_aug 1 --use_half 1 --focus_tune 1 --output_map_file head_main.pth

@@ -107,7 +107,7 @@ def main(ds_main_dir, save_dir):
     # ds_main_dir = (
     #     "/home/n11373598/hpc-home/work/descriptor-disambiguation/datasets/aachen_v1.1"
     # )
-    image_folder = f"{ds_main_dir}/images/images_upright"
+    image_folder = f"{ds_main_dir}/images_upright"
     recon_file = f"{ds_main_dir}/3D-models/aachen_cvpr2018_db.nvm"
 
     db_file = f"{ds_main_dir}/3D-models/database_intrinsics.txt"
@@ -129,7 +129,7 @@ def main(ds_main_dir, save_dir):
                 all_subdirs.add((test_dir / "rgb" / line[0]).parent)
         for subdir in all_subdirs:
             os.makedirs(subdir, exist_ok=True)
-        cmd = f"colmap image_undistorter_standalone --input_file {file} --image_path {image_folder} --output_path {root}/test/rgb"
+        cmd = f"conda run -n colmap colmap image_undistorter_standalone --input_file {file} --image_path {image_folder} --output_path {root}/test/rgb"
         print(cmd)
         run_command(cmd, verbose=True)
     if not os.path.exists(test_dir / "rgb_lmdb"):
@@ -149,7 +149,7 @@ def main(ds_main_dir, save_dir):
     if not os.path.exists(train_dir / "rgb"):
         for subdir in all_subdirs:
             os.makedirs(subdir, exist_ok=True)
-        cmd = f"colmap image_undistorter_standalone --input_file {db_file} --image_path {image_folder} --output_path {root}/train/rgb"
+        cmd = f"conda run -n colmap colmap image_undistorter_standalone --input_file {db_file} --image_path {image_folder} --output_path {root}/train/rgb"
         print(cmd)
         run_command(cmd, verbose=True)
     if not os.path.exists(train_dir / "rgb_lmdb"):
