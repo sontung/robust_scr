@@ -129,7 +129,7 @@ def main(ds_main_dir, save_dir):
                 all_subdirs.add((test_dir / "rgb" / line[0]).parent)
         for subdir in all_subdirs:
             os.makedirs(subdir, exist_ok=True)
-        cmd = f"colmap image_undistorter_standalone --input_file {file} --image_path {image_folder} --output_path {root}/test/rgb"
+        cmd = f"conda run -n colmap colmap image_undistorter_standalone --input_file {file} --image_path {image_folder} --output_path {root}/test/rgb"
         print(cmd)
         run_command(cmd, verbose=True)
     if not os.path.exists(test_dir / "rgb_lmdb"):
@@ -149,7 +149,7 @@ def main(ds_main_dir, save_dir):
     if not os.path.exists(train_dir / "rgb"):
         for subdir in all_subdirs:
             os.makedirs(subdir, exist_ok=True)
-        cmd = f"colmap image_undistorter_standalone --input_file {db_file} --image_path {image_folder} --output_path {root}/train/rgb"
+        cmd = f"conda run -n colmap colmap image_undistorter_standalone --input_file {db_file} --image_path {image_folder} --output_path {root}/train/rgb"
         print(cmd)
         run_command(cmd, verbose=True)
     if not os.path.exists(train_dir / "rgb_lmdb"):
