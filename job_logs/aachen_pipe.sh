@@ -1,10 +1,10 @@
 #!/bin/bash
 #SBATCH --job-name=scr_exp
 #SBATCH --partition=main
-#SBATCH --nodelist=worker-4
+#SBATCH --nodelist=worker-0
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --gpus=nvidia_h100_80gb_hbm3:y
+#SBATCH --gpus=nvidia_h100_80gb_hbm3:1
 #SBATCH --cpus-per-task=10
 #SBATCH --mem=64G
 #SBATCH --time=24:00:00
@@ -15,7 +15,6 @@ SCENE_PATH=/mnt/data/sftp/data/tungns30/aachen10
 
 cd /home/tungns30/robust_scr
 
-scr-download-data aachen
 /home/tungns30/.pixi/bin/pixi run scr-overlap-score --data $SCENE_PATH/train --max_depth 50
 /home/tungns30/.pixi/bin/pixi run scr-encoding-pca dedode --encoder.detector L --encoder.descriptor B --n_components 128 --data $SCENE_PATH
 
