@@ -28,7 +28,7 @@ from encoder import get_encoder
 _logger = logging.getLogger(__name__)
 
 
-class TrainerACE(BaseTrainer):
+class TrainerAachen(BaseTrainer):
     def __init__(self, options_):
         super().__init__(options_)
 
@@ -688,11 +688,11 @@ if __name__ == "__main__":
         options.training_buffer_size = 5000
         options.batch_size = 512
         options.max_iterations = 100
-        trainer = TrainerACE(options)
+        trainer = TrainerAachen(options)
         trainer.train()
         trainer.test_model()
         sys.exit()
 
-    trainer = TrainerACE(options)
+    trainer = TrainerAachen(options)
     trainer.train()
     trainer.test_model()
