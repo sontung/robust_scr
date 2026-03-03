@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=scr_exp
 #SBATCH --partition=main
-#SBATCH --nodelist=worker-3
+#SBATCH --nodelist=worker-0
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --gpus=nvidia_h100_80gb_hbm3:1
