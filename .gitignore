@@ -6,6 +6,8 @@ __pycache__/
 */*.pdf
 *.pt
 */*.pkl
+*.ckpt
+
 datasets/*
 # Dataset files.
 trained_models/*

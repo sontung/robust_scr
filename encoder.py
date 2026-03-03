@@ -149,11 +149,16 @@ class DedodeEncoder(Encoder):
         self.detector = get_detector(config.detector[0])
         self.descriptor = get_descriptor(config.descriptor[0])
 
+        # self.detector.load_state_dict(
+        #     torch.hub.load_state_dict_from_url(
+        #         urls["detector"][f"{config.detector}-upright"], map_location="cpu"
+        #     )
+        # )
+
         self.detector.load_state_dict(
-            torch.hub.load_state_dict_from_url(
-                urls["detector"][f"{config.detector}-upright"], map_location="cpu"
-            )
+            torch.load("checkpoints/dedode_detector_L_v2.pth", map_location="cpu")
         )
+
         self.descriptor.load_state_dict(
             torch.hub.load_state_dict_from_url(
                 urls["descriptor"][f"{config.descriptor}-upright"], map_location="cpu"
