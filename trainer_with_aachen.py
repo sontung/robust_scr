@@ -31,6 +31,9 @@ _logger = logging.getLogger(__name__)
 class TrainerACE(BaseTrainer):
     def __init__(self, options_):
         super().__init__(options_)
+
+        self.dump_dir = "/mnt/data/sftp/data/tungns30/aachen10_dump_folder"
+
         self.feature_dim = self.encoder.out_channels
         self.global_feat_dim = self.dataset.global_feat_dim
         if self.options.global_feat:
@@ -125,7 +128,7 @@ class TrainerACE(BaseTrainer):
                 pass
 
     def create_training_buffer(self):
-        buffer_dir = f"checkpoints/training_buffer_{self.options.training_buffer_size}/{str(self.options.scene).split('/')[-1]}"
+        buffer_dir = f"{self.dump_dir}/training_buffer_{self.options.training_buffer_size}/{str(self.options.scene).split('/')[-1]}"
         os.makedirs(buffer_dir, exist_ok=True)
 
         required_keys = [
