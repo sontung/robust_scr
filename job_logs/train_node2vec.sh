@@ -1,17 +1,16 @@
-#!/bin/bash -l
-#PBS -N train_node2vec
-#PBS -l select=1:ncpus=20:ngpus=1:mem=50GB
-#PBS -l walltime=48:00:00
-#PBS -j oe
+#!/bin/bash
+#SBATCH --job-name=node2vec
+#SBATCH --partition=main
+#SBATCH --nodelist=worker-1
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --gpus=nvidia_h100_80gb_hbm3:1
+#SBATCH --cpus-per-task=10
+#SBATCH --mem=64G
+#SBATCH --time=24:00:00
+#SBATCH --output=%3j_%x.out
+#SBATCH --error=%3j_%x.err
 
-set -e  # Exit on error
-
-# Note: gputype line is optional! Delete if any gpu is fine.
-
-# Activate your conda environment (should already be created and all packages installed)
-conda activate env4
-
-cd /home/n11373598/work/glace_experiment
-
-scr-train node2vec --data --data datasets/robotcar --pipeline.model.graph pose_overlap.npz --pipeline.model.edge_threshold 0.2
+cd /home/tungns30/robust_scr
+/home/tungns30/.pixi/bin/pixi run scr-train node2vec --data --data /mnt/data/sftp/data/tungns30/aachen10 --pipeline.model.graph pose_overlap.npz --pipeline.model.edge_threshold 0.2
 
