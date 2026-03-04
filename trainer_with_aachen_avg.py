@@ -3,6 +3,9 @@ import gc
 import logging
 import os
 import sys
+import time
+from collections import defaultdict
+from multiprocessing import Pool
 
 import numpy as np
 import torch
@@ -19,7 +22,7 @@ from utils import (
     read_nvm_file,
     get_options,
     CSRGraph,
-    run_salad_model,
+    run_salad_model, pose_estimate,
 )
 from config_classes import BatchRandomSamplerConfig, PQKNN
 from dataset import get_dataset, CamLocDatasetConfig
@@ -28,20 +31,17 @@ from encoder import get_encoder
 _logger = logging.getLogger(__name__)
 
 
-class TrainerAachen(BaseTrainer):
+class TrainerAVG(BaseTrainer):
     def __init__(self, options_):
         super().__init__(options_)
+        self.feature_dim = self.encoder.out_channels
+        self.global_feat_dim = self.dataset.global_feat_dim
 
         self.dump_dir = "/mnt/data/sftp/data/tungns30/aachen10_dump_folder"
 
-        self.feature_dim = self.encoder.out_channels
-        self.global_feat_dim = self.dataset.global_feat_dim
-        if self.options.global_feat:
-            head_channels = self.feature_dim + self.global_feat_dim
-        else:
-            head_channels = self.feature_dim
         self.buffer_size_dim = self.feature_dim
-        self.head = self.create_head_network(head_channels)
+        self.head = self.create_head_network(self.feature_dim)
+        self.lambda_w = self.options.lambda_w
 
         if self.options.test_mode:
 
@@ -472,14 +472,6 @@ class TrainerAachen(BaseTrainer):
 
     def get_next_batch(self):
         random_batch_indices = next(self.batch_sampler)
-        features_batch = torch.empty(
-            (
-                self.options.batch_size,
-                self.feature_dim + self.global_feat_dim,
-            ),
-            dtype=self.training_buffer["features"].dtype,
-            device=self.device,
-        )
 
         img_idx = self.training_buffer["img_idx"][random_batch_indices].long()
         if self.options.graph_aug:
@@ -487,12 +479,11 @@ class TrainerAachen(BaseTrainer):
             img_idx[:num_neighbors] = self.covis_graph.sample_neighbors(
                 img_idx[:num_neighbors], self.gn_generator
             )
-
-        features_batch[:, : self.global_feat_dim] = self.global_feats[img_idx]
-
-        features_batch[:, self.global_feat_dim :] = self.training_buffer["features"][
+        gl_feats = self.global_feats[img_idx]
+        local_feats = self.training_buffer["features"][
             random_batch_indices
         ]
+        features_batch = self.lambda_w*local_feats+(1-self.lambda_w)*gl_feats[:, :self.feature_dim]
         dict_ = {"features": features_batch.contiguous()}
         dict_.update(
             {
@@ -680,6 +671,138 @@ class TrainerAachen(BaseTrainer):
             # no_db_desc=True,
         )
 
+    def test_loop(
+        self,
+        testset_loader,
+        knn,
+        emb,
+        val_desc,
+        write_gt_poses=False,
+        scene="indoor",
+        no_db_desc=False,
+        max_samples=-1
+    ):
+        pool = Pool(10)
+        device = "cuda"
+        ransac_opt = {
+            "max_reproj_error": 10,
+            "max_iterations": 10000,
+            "seed": self.base_seed,
+        }
+        _logger = logging.getLogger(__name__)
+        self.clear_training_buffer()
+
+        metrics = defaultdict(list)
+        poses = defaultdict(list)
+        pool_results = []
+        start = time.time()
+
+        assert len(testset_loader.dataset) == val_desc.shape[0]
+        count = 0
+        with torch.no_grad():
+            for batch in tqdm(testset_loader, desc="Testing"):
+                image, idx = batch["image"].to(device, non_blocking=True), batch["idx"]
+                if no_db_desc:
+                    global_feat = batch["global_feat"].to(device, non_blocking=True)
+                else:
+                    indices = knn.kneighbors(val_desc[idx])
+                    global_feat = emb[indices].to(device, non_blocking=True).squeeze(0)
+                if len(global_feat.shape) == 1:
+                    global_feat = global_feat.unsqueeze(0)
+                with autocast(enabled=True, device_type="cuda"):
+
+                    encoder_output = self.encoder.keypoint_features(
+                        {"image": image}, n=0
+                    )
+                    keypoints = encoder_output["keypoints"]
+                    descriptors = encoder_output["descriptors"]
+                    N, C_local = descriptors.shape
+
+                    gl_feats = global_feat.unsqueeze(1).expand(
+                        -1, N, -1
+                    )
+                    local_feats = descriptors.unsqueeze(0).expand(
+                        self.n_neighbors, -1, -1
+                    )
+                    avg_feats = self.lambda_w*local_feats+(1-self.lambda_w)*gl_feats[:, :, :self.feature_dim]
+                    avg_feats = avg_feats.half()
+                    scene_coords = self.head(
+                        {"features": avg_feats.reshape(self.n_neighbors * N, -1)}
+                    )["sc"]
+
+                keypoints = keypoints.float().cpu()
+
+                scene_coords = (
+                    scene_coords.float().cpu().numpy().reshape(self.n_neighbors, N, 3)
+                )
+
+                gt_pose, intrinsics, frame_name = (
+                    batch["pose"][0].numpy(),
+                    batch["intrinsics"][0].numpy(),
+                    batch["filename"][0],
+                )
+                keypoints_np = keypoints.numpy()
+
+                camera = {
+                    "model": "PINHOLE",
+                    "width": image.shape[3],
+                    "height": image.shape[2],
+                    "params": intrinsics[[0, 1, 0, 1], [0, 1, 2, 2]],
+                }
+                knn_results = []
+                for neighbor_idx in range(self.n_neighbors):
+                    knn_results.append(
+                        pool.apply_async(
+                            pose_estimate,
+                            args=(
+                                keypoints_np,
+                                scene_coords[neighbor_idx],
+                                camera,
+                                ransac_opt,
+                                gt_pose,
+                            ),
+                        )
+                    )
+
+                pool_results.append((frame_name, knn_results))
+                count += 1
+                if 0 < max_samples <= count:
+                    break
+
+        final_results = []
+        for frame_name, knn_results in tqdm(pool_results):
+            knn_results = [res.get() for res in knn_results]
+            result = max(knn_results, key=lambda x: x["num_inliers"])
+            final_results.append([frame_name, result])
+            for key in ("pose_q", "pose_t"):
+                poses[key].append(result[key])
+            for key in ("t_err", "r_err", "inlier_ratio"):
+                metrics[key].append(result[key])
+        end = time.time()
+        _logger.info(
+            f"Time: {end - start:.1f}s for {len(testset_loader.dataset)} images"
+        )
+        acc_thresh = {
+            "outdoor": ((5, 10), (0.5, 5), (0.25, 2)),
+            "indoor": ((1, 5), (0.25, 2), (0.1, 1)),
+        }
+
+        if write_gt_poses:
+            self.write_poses_to_file(final_results)
+
+        if testset_loader.dataset.gt_pose_avail:
+            for t, r in acc_thresh[scene]:
+                acc = (np.array(metrics["t_err"]) < t) & (
+                    np.array(metrics["r_err"]) < r
+                )
+                _logger.info(f"Accuracy: {t}m/{r}deg: {acc.mean() * 100:.1f}%")
+            median_rErr = np.median(metrics["r_err"])
+            median_tErr = np.median(metrics["t_err"]) * 100
+            _logger.info(f"Median Error: {median_rErr:.1f}deg, {median_tErr:.1f}cm")
+            _logger.info(f"Mean Inliers: {np.mean(metrics['inlier_ratio']):.2f}")
+        pool.close()
+        pool.join()
+
 
 if __name__ == "__main__":
     options = get_options()
@@ -688,12 +811,12 @@ if __name__ == "__main__":
         options.training_buffer_size = 5000
         options.batch_size = 512
         options.max_iterations = 100
-        trainer = TrainerAachen(options)
+        trainer = TrainerAVG(options)
         trainer.dump_dir = "checkpoints"
         trainer.train()
         trainer.test_model()
         sys.exit()
 
-    trainer = TrainerAachen(options)
+    trainer = TrainerAVG(options)
     trainer.train()
     trainer.test_model()
