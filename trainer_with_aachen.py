@@ -616,11 +616,6 @@ class TrainerAachen(BaseTrainer):
     def get_gl_descriptors(self):
         if self.options.debug_mode:
             print("Using netvlad")
-            # method = "mixvpr"
-            # db_desc = np.load(f"checkpoints/{method}_train.npy")
-            # test_desc = np.load(f"checkpoints/{method}_test.npy")
-            # db_desc = np.load(self.dataset.config.data / "train/netvlad_feats.npy")
-            # test_desc = np.load(self.dataset.config.data / "test/netvlad_feats.npy")
             db_desc = np.load(self.dataset.config.data / "train/desc_salad.npy")
             test_desc = np.load(self.dataset.config.data / "test/desc_salad.npy")
         else:

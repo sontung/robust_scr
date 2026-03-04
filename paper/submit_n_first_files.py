@@ -204,8 +204,8 @@ if __name__ == "__main__":
         "robotcar": "robotcarv2",
         "cmu": "extended-cmu",
     }
-    output_dir = "/home/n11373598/hpc-home/work/glace_experiment/results"
-    # output_dir = "../results"
+    # output_dir = "/home/n11373598/hpc-home/work/glace_experiment/results"
+    output_dir = "../results"
     files = [
         os.path.join(output_dir, f)
         for f in os.listdir(output_dir)
@@ -215,7 +215,7 @@ if __name__ == "__main__":
     # Sort files by last modified time (most recent last)
     files.sort(key=lambda x: os.path.getmtime(x), reverse=True)
 
-    first_n = 4
+    first_n = 2
     files = files[:first_n]
     all_fields = [
         (
