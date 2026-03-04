@@ -556,15 +556,6 @@ class TrainerAVG(BaseTrainer):
             invKs_b33,
         ) = dict_.values()
 
-        # B = target_px_b2.shape[0]
-        # uv_h = torch.cat([target_px_b2, torch.ones(B, 1, device=target_px_b2.device)], dim=1)  # (B, 3)
-        # cam_dirs = torch.bmm(invKs_b33, uv_h.unsqueeze(-1)).squeeze(-1)  # (B, 3)
-        # cam_points = cam_dirs * gt_depths_b1.unsqueeze(1)  # (B, 3)
-        # R_inv = gt_poses_b34[:, :, :3]  # (B, 3, 3)
-        # t_inv = gt_poses_b34[:, :, 3]  # (B, 3)
-        #
-        # xyz_world = torch.bmm(R_inv, cam_points.unsqueeze(-1)).squeeze(-1) + t_inv  # (B, 3)
-
         if not self.options.graph_aug:
             features_bC = self.diffuse_feature(features_bC)
 
@@ -716,6 +707,13 @@ class TrainerAVG(BaseTrainer):
                     )
                     keypoints = encoder_output["keypoints"]
                     descriptors = encoder_output["descriptors"]
+
+                    if self.input_feat_mean is not None:
+                        descriptors = (descriptors - self.input_feat_mean) / (
+                                    self.input_feat_std + 1e-6)
+                        descriptors = 2 * (descriptors - self.input_feat_min) / (
+                                    self.input_feat_max - self.input_feat_min) - 1
+
                     N, C_local = descriptors.shape
 
                     gl_feats = global_feat.unsqueeze(1).expand(

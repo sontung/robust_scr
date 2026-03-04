@@ -118,9 +118,9 @@ class ReproLoss(nn.Module):
 
             repro_error = repro_error[valid]
 
-            print(f"valid: {valid.sum().item()}/{valid.numel()}, "
-                  f"invalid: {invalid.sum().item()}, "
-                  f"repro_error numel: {repro_error.numel()}")
+            # print(f"valid: {valid.sum().item()}/{valid.numel()}, "
+            #       f"invalid: {invalid.sum().item()}, "
+            #       f"repro_error numel: {repro_error.numel()}")
 
             if self.config.depth_bias_adjust:
                 depth_square = depth[valid] ** 2

@@ -544,6 +544,10 @@ def get_options():
     )
 
     parser.add_argument(
+        "--normalize_inputs", type=_strtobool, default=False, help="Use global feature."
+    )
+
+    parser.add_argument(
         "--reuse_buffer", type=_strtobool, default=True, help="Use global feature."
     )
 
@@ -604,7 +608,7 @@ def get_options():
     parser.add_argument(
         "--lambda_w",
         type=float,
-        default=1.0,
+        default=0.5,
         help='path to a scene in the dataset folder, e.g. "datasets/Cambridge_GreatCourt"',
     )
 

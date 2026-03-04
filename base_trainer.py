@@ -84,6 +84,11 @@ class BaseTrainer:
         self.training_buffer = None
         self.head = None
 
+        self.input_feat_mean = None
+        self.input_feat_std = None
+        self.input_feat_min = None
+        self.input_feat_max = None
+
     def create_head_network(self, in_channels):
         mat2 = self.dataset.metadata["cluster_centers"]
         head = get_model(in_channels, {"cluster_centers": mat2})
@@ -110,6 +115,17 @@ class BaseTrainer:
 
         max_iterations = self.options.max_iterations
         self.create_training_buffer()
+
+        if self.options.normalize_inputs:
+            self.input_feat_mean = self.training_buffer["features"].mean()
+            self.input_feat_std = self.training_buffer["features"].std()
+            self.input_feat_min = self.training_buffer["features"].min()
+            self.input_feat_max = self.training_buffer["features"].max()
+
+            local_feat = (self.training_buffer["features"] - self.input_feat_mean) / (self.input_feat_std + 1e-6)
+            local_feat = 2 * (local_feat - self.input_feat_min) / (self.input_feat_max - self.input_feat_min) - 1
+            self.training_buffer["features"] = local_feat
+
         pbar = tqdm(total=self.iterations, desc="Training")
 
         while self.iteration < self.options.max_iterations:
