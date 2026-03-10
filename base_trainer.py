@@ -149,6 +149,7 @@ class BaseTrainer:
             ]["step"]
 
         except KeyError:
+            print("Optimizer state is None")
             step_count = 0
         return int(step_count)
 
