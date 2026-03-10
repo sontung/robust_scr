@@ -143,15 +143,25 @@ class BaseTrainer:
         pass
 
     def get_step_count(self):
-        try:
-            step_count = self.optimizer.state[
-                self.optimizer.param_groups[0]["params"][0]
-            ]["step"]
+        # try:
+        #     step_count = self.optimizer.state[
+        #         self.optimizer.param_groups[0]["params"][0]
+        #     ]["step"]
+        #
+        # except KeyError:
+        #     print("Optimizer state is None")
+        #     step_count = 0
+        # return int(step_count)
 
-        except KeyError:
-            print("Optimizer state is None")
-            step_count = 0
-        return int(step_count)
+        for param_group in self.optimizer.param_groups:
+            for param in param_group["params"]:
+                state = self.optimizer.state.get(param, {})
+                if "step" in state:
+                    return int(state["step"])
+
+        print("Optimizer state is None")
+        return 0
+
 
     def save_model(self):
         with torch.no_grad():
