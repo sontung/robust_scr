@@ -1,14 +1,21 @@
-#!/bin/bash -l
-#PBS -N scr_studio
-#PBS -l select=1:ncpus=20:ngpus=1:mem=50GB:gpu_id=H100
-#PBS -l walltime=48:00:00
-#PBS -j oe
+#!/bin/bash
+#SBATCH --job-name=scr_studio
+#SBATCH --partition=main
+#SBATCH --nodelist=worker-0
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --gpus=nvidia_h100_80gb_hbm3:1
+#SBATCH --cpus-per-task=10
+#SBATCH --mem=64G
+#SBATCH --time=24:00:00
+#SBATCH --output=%3j_%x.out
+#SBATCH --error=%3j_%x.err
 
-set -e  # Exit on error
-
-DATA_PATH=../glace_experiment/datasets/aachen11
+DATA_PATH=/mnt/data/sftp/data/tungns30/aachen10
 
 cd /home/n11373598/work/scrstudio_me
+
+/home/n11373598/.pixi/bin/pixi run scr-train node2vec --data $DATA_PATH --pipeline.model.graph pose_overlap.npz --pipeline.model.edge_threshold 0.2
 
 /home/n11373598/.pixi/bin/pixi run scr-train scrfacto --data $DATA_PATH --pipeline.datamanager.train_dataset.feat_name pose_n2c.pt || {
   echo "Python crashed!"
@@ -23,3 +30,9 @@ cd /home/n11373598/work/scrstudio_me
   exit 1
 }
 /home/n11373598/.pixi/bin/pixi run scr-eval --load-config outputs/aachen11/scrfacto/fixed/config.yml --split test
+
+#/home/n11373598/.pixi/bin/pixi run scr-encoding-pca dedode --encoder.detector L --encoder.descriptor B --n_components 128 --data $DATA_PATH
+#/home/n11373598/.pixi/bin/pixi run scr-overlap-score --data $DATA_PATH/train --max_depth 50
+#/home/n11373598/.pixi/bin/pixi run scr-train node2vec --data $DATA_PATH --pipeline.model.graph pose_overlap.npz --pipeline.model.edge_threshold 0.2
+#/home/n11373598/.pixi/bin/pixi run scr-retrieval-feat --data $DATA_PATH/train
+#/home/n11373598/.pixi/bin/pixi run scr-retrieval-feat --data $DATA_PATH/test
