@@ -13,7 +13,7 @@
 
 DATA_PATH=/mnt/data/sftp/data/tungns30/aachen10
 
-cd /home/n11373598/work/scrstudio_me
+cd /home/tungns30/robust_scr
 
 /home/tungns30/.pixi/bin/pixi run scr-train node2vec --data $DATA_PATH --pipeline.model.graph pose_overlap.npz --pipeline.model.edge_threshold 0.2
 
