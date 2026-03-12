@@ -14,6 +14,7 @@ from torch.utils.data import DataLoader, sampler
 from tqdm import tqdm
 
 from base_trainer import BaseTrainer
+from networks import get_model
 from rscore_loss import get_losses
 from utils import (
     read_nvm_file,
@@ -126,6 +127,12 @@ class TrainerAachen(BaseTrainer):
                 self.name2id = {v: k for k, v in self.image2name.items()}
             except FileNotFoundError:
                 pass
+
+    def create_head_network(self, in_channels):
+        mat2 = self.dataset.metadata["cluster_centers"]
+        head = get_model(in_channels, {"cluster_centers": mat2}, head_channels=1280)
+        print(f"Created with {in_channels} input channels")
+        return head
 
     def create_training_buffer(self):
         buffer_dir = f"{self.dump_dir}/training_buffer_{self.options.training_buffer_size}/{str(self.options.scene).split('/')[-1]}"

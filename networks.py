@@ -311,7 +311,7 @@ class PositionRefiner(nn.Module):
         return data
 
 
-def get_model(in_channels, metadata):
+def get_model(in_channels, metadata, head_channels=768):
     backbone_config = BlockListConfig(
         blocks=[
             (InputBlockConfig(), 1),
@@ -340,7 +340,7 @@ def get_model(in_channels, metadata):
     )
     backbone = backbone_config.setup(
         in_channels=in_channels,
-        head_channels=768,
+        head_channels=head_channels,
         mlp_ratio=2.0,
         metadata=metadata,
     )
