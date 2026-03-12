@@ -17,10 +17,10 @@ cd /home/tungns30/robust_scr
 
 #/home/tungns30/.pixi/bin/pixi run scr-train node2vec --data $DATA_PATH --pipeline.model.graph pose_overlap.npz --pipeline.model.edge_threshold 0.2
 
-/home/tungns30/.pixi/bin/pixi run scr-train scrfacto --data $DATA_PATH --pipeline.datamanager.train_dataset.feat_name pose_n2c.pt || {
-  echo "Python crashed!"
-  exit 1
-}
+#/home/tungns30/.pixi/bin/pixi run scr-train scrfacto --data $DATA_PATH --pipeline.datamanager.train_dataset.feat_name pose_n2c.pt || {
+#  echo "Python crashed!"
+#  exit 1
+#}
 /home/tungns30/.pixi/bin/pixi run scr-retrieval-feat --data $DATA_PATH/train --pq || {
   echo "Python crashed!"
   exit 1
@@ -29,7 +29,7 @@ cd /home/tungns30/robust_scr
   echo "Python crashed!"
   exit 1
 }
-/home/tungns30/.pixi/bin/pixi run scr-eval --load-config outputs/aachen11/scrfacto/fixed/config.yml --split test
+/home/tungns30/.pixi/bin/pixi run scr-eval --load-config outputs/aachen10/scrfacto/fixed/config.yml --split test
 
 #/home/tungns30/.pixi/bin/pixi run scr-encoding-pca dedode --encoder.detector L --encoder.descriptor B --n_components 128 --data $DATA_PATH
 #/home/tungns30/.pixi/bin/pixi run scr-overlap-score --data $DATA_PATH/train --max_depth 50
