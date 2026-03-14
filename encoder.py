@@ -68,7 +68,8 @@ urls = {
         "G-C4": "https://github.com/georg-bn/rotation-steerers/releases/download/release-2/G_C4_Perm_descriptor_setting_C.pth",
     },
 }
-
+"https://github.com/Parskatt/DeDoDe/releases/download/dedode_pretrained_models/dedode_descriptor_B.pth"
+"https://github.com/Parskatt/DeDoDe/releases/download/v2/dedode_detector_L_v2.pth"
 
 class Encoder(nn.Module):
     OUTPUT_SUBSAMPLE = 0
