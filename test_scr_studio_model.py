@@ -43,7 +43,7 @@ def load():
 
 
     centers = np.load("checkpoints/scene_centers.npy")
-    model = get_model(in_channels=384, head_channels=1280,
+    model = get_model(in_channels=128, head_channels=1280,
                       metadata={"cluster_centers": torch.from_numpy(centers)})
 
     new_state_dict = {}
