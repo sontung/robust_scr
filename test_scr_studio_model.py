@@ -42,15 +42,9 @@ def load():
     state_dict = torch.load("checkpoints/mlp.pt")
 
 
-    train_config = CamLocDatasetConfig(
-        data=Path("/home/vr/work/datasets/aachen/aachen"),
-        split="train",
-    )
-
-    raw_ds = train_config.setup()
-    kmeans = KMeans(n_clusters=50, random_state=0).fit(
-        raw_ds.pose_values[:, :3, 3].astype(np.float32))
-    model = get_model(in_channels=384, head_channels=1280, metadata={"cluster_centers": torch.from_numpy(kmeans.cluster_centers_)})
+    centers = np.load("checkpoints/scene_centers.npy")
+    model = get_model(in_channels=384, head_channels=1280,
+                      metadata={"cluster_centers": torch.from_numpy(centers)})
 
     new_state_dict = {}
     for k, v in state_dict.items():

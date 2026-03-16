@@ -238,6 +238,7 @@ def main_loop():
 
     np.save(f"checkpoints/{model_name}.npy", mat1)
     np.save(f"checkpoints/{model_name}_test.npy", mat2)
+    print(f"Saved descriptors at checkpoints/{model_name}.npy")
 
 
 if __name__ == "__main__":

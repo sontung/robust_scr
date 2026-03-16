@@ -708,11 +708,11 @@ class TrainerAVG(BaseTrainer):
                     keypoints = encoder_output["keypoints"]
                     descriptors = encoder_output["descriptors"]
 
-                    if self.input_feat_mean is not None:
-                        descriptors = (descriptors - self.input_feat_mean) / (
-                                    self.input_feat_std + 1e-6)
-                        descriptors = 2 * (descriptors - self.input_feat_min) / (
-                                    self.input_feat_max - self.input_feat_min) - 1
+                    # if self.input_feat_mean is not None:
+                    #     descriptors = (descriptors - self.input_feat_mean) / (
+                    #                 self.input_feat_std + 1e-6)
+                    #     descriptors = 2 * (descriptors - self.input_feat_min) / (
+                    #                 self.input_feat_max - self.input_feat_min) - 1
 
                     N, C_local = descriptors.shape
 
