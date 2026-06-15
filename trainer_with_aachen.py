@@ -3,16 +3,23 @@ import gc
 import logging
 import os
 import sys
+from collections import defaultdict
+from pathlib import Path
 
+import h5py
+import hydra
 import numpy as np
 import torch
 import torch.optim as optim
+from omegaconf import OmegaConf, DictConfig
 from pykdtree.kdtree import KDTree
 from scipy.sparse import load_npz
 from torch import autocast
 from torch.utils.data import DataLoader, sampler
 from tqdm import tqdm
+import wandb
 
+import utils
 from base_trainer import BaseTrainer
 from networks import get_model
 from rscore_loss import get_losses
@@ -30,31 +37,27 @@ _logger = logging.getLogger(__name__)
 
 
 class TrainerAachen(BaseTrainer):
-    def __init__(self, options_):
-        super().__init__(options_)
-
-        self.dump_dir = "/mnt/data/sftp/data/tungns30/aachen10_dump_folder"
+    def __init__(self, cfg: DictConfig):
+        self.cfg = cfg
+        super().__init__(cfg)
+        # self.dump_dir = "/mnt/data/sftp/data/tungns30/aachen10_dump_folder"
+        self.dump_dir = cfg.dump_dir
 
         self.feature_dim = self.encoder.out_channels
         self.global_feat_dim = self.dataset.global_feat_dim
-        if self.options.global_feat:
+        if self.cfg.global_feat:
             head_channels = self.feature_dim + self.global_feat_dim
         else:
             head_channels = self.feature_dim
         self.buffer_size_dim = self.feature_dim
         self.head = self.create_head_network(head_channels)
 
-        if self.options.test_mode:
+        if self.cfg.test_mode:
 
             self.head.load_state_dict(
                 torch.load(
-                    # "/home/n11373598/hpc-home/work/glace_experiment/checkpoints/head_loftr_best.pth",
-                    "/home/n11373598/hpc-home/work/glace_experiment/checkpoints/head_main.pth",
-                    # "/home/n11373598/hpc-home/work/glace_experiment/checkpoints/head_loftr_node2vec_gt.pth",
-                    # "/home/n11373598/hpc-home/work/glace_experiment/checkpoints/head_loftr_fm.pth",
-                    # "/home/n11373598/hpc-home/work/glace_experiment/checkpoints/head_loftr2.pth",
-                    # "/home/n11373598/hpc-home/work/glace_experiment/checkpoints/head_radial.pth"
-                    # "/home/n11373598/hpc-home/work/glace_experiment/checkpoints/head_loftr.pth",
+                    "checkpoints/best_model.pth",
+                    # "checkpoints/head_main.pth",
                     weights_only=True,
                 )
             )
@@ -66,23 +69,23 @@ class TrainerAachen(BaseTrainer):
         self.head.to(self.device)
         self.optimizer = optim.AdamW(
             self.head.parameters(),
-            lr=self.options.learning_rate_max,
+            lr=self.cfg.learning_rate_max,
             weight_decay=1e-2,
         )
 
         # Setup learning rate scheduler.
         self.scheduler = optim.lr_scheduler.OneCycleLR(
             self.optimizer,
-            max_lr=self.options.learning_rate_max,
-            total_steps=self.options.max_iterations,
+            max_lr=self.cfg.learning_rate_max,
+            total_steps=self.cfg.max_iterations,
             cycle_momentum=False,
             pct_start=0.04,
         )
 
-        print(f"Using {self.options.learning_rate_max} as learning rate")
+        print(f"Using {self.cfg.learning_rate_max} as learning rate")
 
-        self.ds_dir = str(self.options.scene)
-        pose_graph_dir = self.options.scene / "train/pose_overlap.npz"
+        self.ds_dir = str(self.cfg.scene)
+        pose_graph_dir = self.cfg.scene / "train/pose_overlap.npz"
         print(f"Load membership from {pose_graph_dir}")
         covis_score = load_npz(pose_graph_dir)
         covis_score.data[covis_score.data < 0.2] = 0
@@ -90,31 +93,32 @@ class TrainerAachen(BaseTrainer):
         covis_score.eliminate_zeros()
         covis_score = covis_score.tocsr()
         self.covis_graph = CSRGraph.from_csr_array(covis_score, self.device)
-        self.loss_functions = get_losses(self.options.max_iterations)
-        self.gradient_accumulation_steps = self.options.grad_acc
+        self.loss_functions = get_losses(self.cfg.max_iterations)
+        self.gradient_accumulation_steps = self.cfg.grad_acc
 
-        sampler_config = BatchRandomSamplerConfig(batch_size=self.options.batch_size)
+        sampler_config = BatchRandomSamplerConfig(batch_size=self.cfg.batch_size)
         self.batch_sampler = iter(
             sampler_config.setup(
-                dataset_size=self.options.training_buffer_size,
+                dataset_size=self.cfg.training_buffer_size,
                 generator=self.training_generator,
             )
         )
 
         train_config = CamLocDatasetConfig(
-            data=self.options.scene,
+            data=self.cfg.scene,
             split="train",
         )
 
         raw_ds = train_config.setup()
-        run_salad_model(raw_ds, self.options.scene / "images_upright")
-        run_salad_model(self.test_dataset, self.options.scene / "images_upright")
-
-        if self.options.test_mode:
-            # self.debug_model()
+        run_salad_model(raw_ds, self.cfg.scene / "images_upright")
+        run_salad_model(self.test_dataset, self.cfg.scene / "images_upright")
+        self.prev_re = None
+        if self.cfg.test_mode:
+            self.test_model_train_set()
             self.test_model()
             sys.exit()
-        if self.options.focus_tune:
+
+        if self.cfg.focus_tune:
             try:
                 (
                     self.xyz_arr,
@@ -123,10 +127,13 @@ class TrainerAachen(BaseTrainer):
                     self.image2info,
                     self.image2uvs,
                     self.image2pose,
-                ) = read_nvm_file(self.options.scene / "aachen_cvpr2018_db.nvm")
+                ) = read_nvm_file(self.cfg.scene / "aachen_cvpr2018_db.nvm")
                 self.name2id = {v: k for k, v in self.image2name.items()}
             except FileNotFoundError:
-                pass
+                print(
+                    f"Cannot find nvm model at {self.cfg.scene / 'aachen_cvpr2018_db.nvm'})"
+                )
+                sys.exit()
 
     def create_head_network(self, in_channels):
         mat2 = self.dataset.metadata["cluster_centers"]
@@ -134,8 +141,58 @@ class TrainerAachen(BaseTrainer):
         print(f"Created with {in_channels} input channels")
         return head
 
+    def retrieve_gt_xyz(
+        self,
+        image_ori_B1HW,
+        frame_path,
+        uv_grid_arr,
+        gt_pose_inv_B44,
+        intrinsics_B33,
+        radius=5,
+    ):
+        # Get image dimensions from the actual tensor shape
+        _, H, W, _ = image_ori_B1HW.shape
+
+        image_id = self.name2id[frame_path[0]]
+        pid_list = self.image2points[image_id]
+        xyz = self.xyz_arr[pid_list]  # Assuming xyz_arr is a numpy array
+
+        # Project XYZ to Camera Coords
+        # Using @ for matrix multiplication is cleaner
+        xyz_homo = np.hstack([xyz, np.ones((xyz.shape[0], 1))]).T
+        cam_coords = gt_pose_inv_B44[0, :3].cpu().numpy() @ xyz_homo
+
+        # Project to Screen Space
+        uv_homo = intrinsics_B33[0].cpu().numpy() @ cam_coords
+        z = np.clip(uv_homo[2], 0.1, None)
+        uv = uv_homo[:2] / z
+        uv = uv.T
+
+        # Filter points actually landing within the image frame
+        in_frame = (uv[:, 0] >= 0) & (uv[:, 0] < W) & (uv[:, 1] >= 0) & (uv[:, 1] < H)
+
+        if np.sum(in_frame) < 10:
+            return torch.zeros(uv_grid_arr.shape[0], device="cuda"), None, None
+
+        # Match sampled keypoints to projected map points
+        tree = KDTree(uv[in_frame])
+        distances, indices = tree.query(uv_grid_arr)
+
+        # Create mask based on distance threshold
+        mask = distances < radius
+
+        # Extract depth and 3D coords for the matched points
+        # Note: we must index into the 'in_frame' subset of xyz
+        valid_xyz = xyz[in_frame]
+        valid_cam_coords = cam_coords[:, in_frame]
+
+        xyz_gt = valid_xyz[indices]
+        depths = valid_cam_coords[2, indices]
+
+        return torch.from_numpy(mask.astype(np.int32)).cuda(), depths, xyz_gt
+
     def create_training_buffer(self):
-        buffer_dir = f"{self.dump_dir}/training_buffer_{self.options.training_buffer_size}/{str(self.options.scene).split('/')[-1]}"
+        buffer_dir = f"{self.dump_dir}/training_buffer_{self.cfg.training_buffer_size}/{str(self.cfg.scene).split('/')[-1]}"
         os.makedirs(buffer_dir, exist_ok=True)
 
         required_keys = [
@@ -155,7 +212,7 @@ class TrainerAachen(BaseTrainer):
             os.path.exists(os.path.join(buffer_dir, f"{k}.pt")) for k in required_keys
         )
 
-        if buffer_exists and self.options.reuse_buffer:
+        if buffer_exists and self.cfg.reuse_buffer:
             print(
                 f"Loading training buffer from {buffer_dir} (moving to {self.device})..."
             )
@@ -176,47 +233,47 @@ class TrainerAachen(BaseTrainer):
         # Create a training buffer that lives on the GPU.
         self.training_buffer = {
             "features": torch.empty(
-                (self.options.training_buffer_size, self.buffer_size_dim),
-                dtype=(torch.float32, torch.float16)[self.options.use_half],
+                (self.cfg.training_buffer_size, self.buffer_size_dim),
+                dtype=(torch.float32, torch.float16)[self.cfg.use_half],
                 device=self.device,
             ),
             "target_px": torch.empty(
-                (self.options.training_buffer_size, 2),
+                (self.cfg.training_buffer_size, 2),
                 dtype=torch.float32,
                 device=self.device,
             ),
             "gt_poses_inv": torch.empty(
-                (self.options.training_buffer_size, 3, 4),
+                (self.cfg.training_buffer_size, 3, 4),
                 dtype=torch.float32,
                 device=self.device,
             ),
             "gt_poses": torch.empty(
-                (self.options.training_buffer_size, 3, 4),
+                (self.cfg.training_buffer_size, 3, 4),
                 dtype=torch.float32,
                 device=self.device,
             ),
             "intrinsics": torch.empty(
-                (self.options.training_buffer_size, 3, 3),
+                (self.cfg.training_buffer_size, 3, 3),
                 dtype=torch.float32,
                 device=self.device,
             ),
             "intrinsics_inv": torch.empty(
-                (self.options.training_buffer_size, 3, 3),
+                (self.cfg.training_buffer_size, 3, 3),
                 dtype=torch.float32,
                 device=self.device,
             ),
             "img_idx": torch.empty(
-                (self.options.training_buffer_size,),
+                (self.cfg.training_buffer_size,),
                 dtype=torch.int32,
                 device=self.device,
             ),
             "xyz_gt": torch.empty(
-                (self.options.training_buffer_size, 3),
+                (self.cfg.training_buffer_size, 3),
                 dtype=torch.float32,
                 device=self.device,
             ),
             "sample_idx": torch.empty(
-                (self.options.training_buffer_size,),
+                (self.cfg.training_buffer_size,),
                 dtype=torch.int32,
                 device=self.device,
             ),
@@ -226,7 +283,7 @@ class TrainerAachen(BaseTrainer):
         buffer_idx = 0
         dataset_passes = 0
         example_idx = 0
-        pbar = tqdm(total=self.options.training_buffer_size, desc="Filling buffer")
+        pbar = tqdm(total=self.cfg.training_buffer_size, desc="Filling buffer")
 
         batch_sampler = sampler.RandomSampler(
             self.dataset, generator=self.batch_generator
@@ -244,7 +301,7 @@ class TrainerAachen(BaseTrainer):
             timeout=120,
         )
 
-        while buffer_idx < self.options.training_buffer_size:
+        while buffer_idx < self.cfg.training_buffer_size:
             dataset_passes += 1
             for batch in training_dataloader:
                 (
@@ -269,10 +326,14 @@ class TrainerAachen(BaseTrainer):
                 image_B1HW = image_B1HW.to(self.device, non_blocking=True)
 
                 with torch.no_grad():
-                    with autocast(enabled=self.options.use_half, device_type="cuda"):
+                    with autocast(
+                        enabled=self.cfg.use_half,
+                        dtype=torch.bfloat16,
+                        device_type="cuda",
+                    ):
                         encoder_output = self.encoder.keypoint_features(
                             {"image": image_B1HW, "mask": image_mask_B1HW},
-                            n=self.options.samples_per_image,
+                            n=self.cfg.samples_per_image,
                             generator=self.sampling_generator,
                         )
 
@@ -322,7 +383,7 @@ class TrainerAachen(BaseTrainer):
 
                 image_mask_N1 = torch.ones(nb_features).cuda()
                 xyz_gt = None
-                if self.options.focus_tune:
+                if self.cfg.focus_tune:
                     mask, gt_depths, xyz_gt = self.retrieve_gt_xyz(
                         image_ori,
                         filename,
@@ -335,12 +396,10 @@ class TrainerAachen(BaseTrainer):
                     continue
 
                 # Over-sample according to image mask.
-                features_to_select = min(
-                    self.options.samples_per_image * 1, nb_features
-                )
+                features_to_select = min(self.cfg.samples_per_image * 1, nb_features)
                 features_to_select = min(
                     features_to_select,
-                    self.options.training_buffer_size - buffer_idx,
+                    self.cfg.training_buffer_size - buffer_idx,
                 )
 
                 # Sample indices uniformly, with replacement.
@@ -375,7 +434,7 @@ class TrainerAachen(BaseTrainer):
 
                 buffer_idx = buffer_offset
                 pbar.update(features_to_select)
-                if buffer_idx >= self.options.training_buffer_size:
+                if buffer_idx >= self.cfg.training_buffer_size:
                     break
         pbar.close()
         example_indices = self.training_buffer["sample_idx"]
@@ -411,7 +470,7 @@ class TrainerAachen(BaseTrainer):
             gc.collect()
             torch.cuda.empty_cache()
             self.training_buffer[k] = light_buffer[k]
-        if self.options.reuse_buffer:
+        if self.cfg.reuse_buffer:
             print(
                 f"Saving training buffer to {buffer_dir} (one file per key on CPU)..."
             )
@@ -419,69 +478,11 @@ class TrainerAachen(BaseTrainer):
                 torch.save(v.cpu(), os.path.join(buffer_dir, f"{k}.pt"))
             print("All buffer keys saved successfully on CPU.")
 
-    def retrieve_gt_xyz(
-        self,
-        image_ori_B1HW,
-        frame_path,
-        uv_grid_arr,
-        gt_pose_inv_B44,
-        intrinsics_B33,
-        radius=5,
-    ):
-        batch_idx = 0
-
-        # image_ori = image_ori_B1HW[0].cpu().numpy().astype(np.uint8)
-        image_id_from_map = self.name2id[frame_path[0]]
-        pid_list = self.image2points[image_id_from_map]
-        xyz = np.take(self.xyz_arr, pid_list, axis=0)
-        xyzt = np.hstack([xyz, np.ones((xyz.shape[0], 1))]).T
-        gt_inv_pose_34 = gt_pose_inv_B44[batch_idx, :3]
-        cam_coords = np.matmul(gt_inv_pose_34.cpu().numpy(), xyzt)
-
-        uv = np.matmul(intrinsics_B33[batch_idx].cpu().numpy(), cam_coords)
-        uv[2] = np.clip(uv[2], 0.1, None)  # Set minimum value to 0.1
-        uv = uv[0:2] / uv[2]
-        uv = uv.T
-
-        # for u, v in uv:
-        #     cv2.circle(image_ori, (int(u), int(v)), 2, (0, 255, 0), -1)
-        # image_ori = cv2.cvtColor(image_ori, cv2.COLOR_BGR2RGB)
-        #
-        # uv_gt = np.array(self.image2uvs[image_id_from_map])
-        # image2 = cv2.imread(f"/home/n11373598/work/glace/datasets/aachen_source/images_upright/{frame_path[0]}")
-        # for u, v in uv_gt:
-        #     cv2.circle(image2, (int(u), int(v)), 2, (0, 255, 0), -1)
-        #
-        # image3 = stack_images_horizontally(image_ori, image2)
-        # cv2.imwrite(f"debug/{image_id_from_map}.png", image3)
-
-        b1, b2 = np.max(uv_grid_arr, 0)
-        oob_mask1 = np.bitwise_and(0 <= uv[:, 0], uv[:, 0] < b1)
-        oob_mask2 = np.bitwise_and(0 <= uv[:, 1], uv[:, 1] < b2)
-        oob_mask = np.bitwise_and(oob_mask1, oob_mask2)
-
-        depths = None
-        xyz_gt = None
-        if np.sum(oob_mask) < 10:
-            mask = np.zeros(uv_grid_arr.shape[0])
-        else:
-
-            tree = KDTree(uv[oob_mask])
-            dis, ind = tree.query(uv_grid_arr)
-            mask = dis < radius
-            depths = cam_coords[2, ind]
-            xyz_gt = xyz[ind]
-
-        mask = mask.astype(int)
-        mask = torch.from_numpy(mask).cuda()
-
-        return mask, depths, xyz_gt
-
     def get_next_batch(self):
         random_batch_indices = next(self.batch_sampler)
         features_batch = torch.empty(
             (
-                self.options.batch_size,
+                self.cfg.batch_size,
                 self.feature_dim + self.global_feat_dim,
             ),
             dtype=self.training_buffer["features"].dtype,
@@ -489,7 +490,7 @@ class TrainerAachen(BaseTrainer):
         )
 
         img_idx = self.training_buffer["img_idx"][random_batch_indices].long()
-        if self.options.graph_aug:
+        if self.cfg.graph_aug:
             num_neighbors = img_idx.shape[0] // 2
             img_idx[:num_neighbors] = self.covis_graph.sample_neighbors(
                 img_idx[:num_neighbors], self.gn_generator
@@ -525,40 +526,76 @@ class TrainerAachen(BaseTrainer):
         )
         return dict_
 
-    def run_epoch(self, pbar_, max_iterations=None):
-        """
-        Run one epoch of training, shuffling the feature buffer and iterating over it.
-        """
-        # Enable benchmarking since all operations work on the same tensor size.
-        torch.backends.cudnn.benchmark = True
+    def handle_re_spike(self, error_val, batch_data, iteration):
+        print(f"\n⚠️ SPIKE DETECTED: RE = {error_val:.2f} at iteration {iteration}")
 
-        # Iterate with mini batches.
+        # 1. Save the model state immediately
+        spike_dir = Path(self.dump_dir) / "spikes" / f"iter_{iteration}"
+        spike_dir.mkdir(parents=True, exist_ok=True)
+
+        torch.save(self.head.state_dict(), spike_dir / "head_spike.pth")
+
+        # 2. Save the exact batch that caused the spike for offline debugging
+        # We move to CPU to avoid keeping GPU memory tied up
+        batch_cpu = {
+            k: v.cpu() if isinstance(v, torch.Tensor) else v
+            for k, v in batch_data.items()
+        }
+        torch.save(batch_cpu, spike_dir / "batch_data.pt")
+
+        # 3. Log an artifact or alert to WandB
+        wandb.log(
+            {
+                "event/spike_detected": 1,
+                "event/spike_re_value": error_val,
+                "iteration": iteration,
+            }
+        )
+
+        _logger.warning(f"Saved spike diagnostic data to {spike_dir}")
+        sys.exit()
+
+    def run_epoch(self, pbar_, max_iterations=None):
+        torch.backends.cudnn.benchmark = True
         self.optimizer.zero_grad()
+
+        epoch_re = 0
+        valid_batches = 0
         for _ in range(self.gradient_accumulation_steps):
             dict_ = self.get_next_batch()
-            loss_val, mean_re, ma1, mi1 = self.training_step(dict_)
+            loss_tensor, mean_re, ma1, mi1 = self.training_step(
+                dict_, skip_backward=False
+            )
+            epoch_re += mean_re
+            valid_batches += 1
+
             pbar_.set_postfix(
-                loss=f"{loss_val*self.gradient_accumulation_steps:.1f}",
-                re=f"{mean_re:.1f} {ma1:.1f} {mi1:.1f}",
-                lr=f"{self.optimizer.param_groups[0]['lr']:.5f}",
+                loss=f"{loss_tensor.detach() * self.gradient_accumulation_steps:.1f}",
+                re=f"{epoch_re / valid_batches:.1f}",
             )
 
-        self.iteration += 1
         old_optimizer_step = self.get_step_count()
-        self.scaler.step(self.optimizer)
-        self.scaler.update()
+        self.optimizer.step()
+
         curr_step = self.get_step_count()
         if old_optimizer_step < curr_step < self.scheduler.total_steps:
             self.scheduler.step()
 
+        wandb.log(
+            {
+                "iteration": self.iteration,
+                "train/median_repro_error": epoch_re / valid_batches,
+            }
+        )
+
+        self.iteration += 1
+        self.optimizer.zero_grad()
         pbar_.update(1)
 
-    def training_step(
-        self,
-        dict_,
-    ):
+    def training_step(self, dict_, skip_backward=False, safe_version=False):
         """
-        Run one iteration of training, computing the reprojection error and minimising it.
+        Run one iteration of training, computing metrics.
+        Returns loss tensor and scalar metrics.
         """
 
         (
@@ -572,61 +609,62 @@ class TrainerAachen(BaseTrainer):
             invKs_b33,
         ) = dict_.values()
 
-        # B = target_px_b2.shape[0]
-        # uv_h = torch.cat([target_px_b2, torch.ones(B, 1, device=target_px_b2.device)], dim=1)  # (B, 3)
-        # cam_dirs = torch.bmm(invKs_b33, uv_h.unsqueeze(-1)).squeeze(-1)  # (B, 3)
-        # cam_points = cam_dirs * gt_depths_b1.unsqueeze(1)  # (B, 3)
-        # R_inv = gt_poses_b34[:, :, :3]  # (B, 3, 3)
-        # t_inv = gt_poses_b34[:, :, 3]  # (B, 3)
-        #
-        # xyz_world = torch.bmm(R_inv, cam_points.unsqueeze(-1)).squeeze(-1) + t_inv  # (B, 3)
-
-        if not self.options.graph_aug:
+        if not self.cfg.graph_aug:
             features_bC = self.diffuse_feature(features_bC)
 
-        with autocast(enabled=self.options.use_half, device_type="cuda"):
+        with autocast(
+            enabled=self.cfg.use_half, dtype=torch.bfloat16, device_type="cuda"
+        ):
             outputs = self.head({"features": features_bC})
-        nan_mask = torch.all(torch.bitwise_not(torch.isnan(outputs["sc"])), 1)
 
-        outputs["target_px"] = target_px_b2[nan_mask]
-        outputs["gt_poses_inv"] = gt_inv_poses_b34[nan_mask]
-        outputs["intrinsics"] = Ks_b33[nan_mask]
-        outputs["intrinsics_inv"] = invKs_b33[nan_mask]
-        outputs["sc"] = outputs["sc"][nan_mask]
-        outputs["sc0"] = outputs["sc0"][nan_mask]
-        outputs["step"] = self.iteration
-        outputs["gt_coords"] = xyz_gt_b3
+        if self.iteration % 500 == 0:
+            nan_mask = torch.all(torch.bitwise_not(torch.isnan(outputs["sc"])), 1)
+            if not nan_mask.all():
+                wandb.finish()
+                raise ValueError("NaN found in the output")
 
-        if torch.mean(nan_mask.float()) < 1:
-            raise ValueError("NaN found in the output")
+        outputs.update(
+            {
+                "target_px": target_px_b2,
+                "gt_poses_inv": gt_inv_poses_b34,
+                "intrinsics": Ks_b33,
+                "intrinsics_inv": invKs_b33,
+                "sc": outputs["sc"],
+                "sc0": outputs["sc0"],
+                "step": self.iteration,
+                "gt_coords": xyz_gt_b3,
+            }
+        )
+
         for loss_function in self.loss_functions:
-            outputs = loss_function(outputs)
+            if safe_version:
+                outputs = loss_function.forward_safe_version(outputs)
+            else:
+                outputs = loss_function(outputs)
+                # outputs = loss_function.forward_fast(outputs)
 
         metrics_dict = outputs["metrics"]
-        loss_dict = {
-            "loss": metrics_dict["loss"],
-        }
-        with autocast(enabled=self.options.use_half, device_type="cuda"):
-            loss = (
-                functools.reduce(torch.add, loss_dict.values())
-                / self.gradient_accumulation_steps
-            )
-        self.scaler.scale(loss).backward()
+
+        # We keep the loss as a tensor if we need to call .backward() on it later
+        loss = metrics_dict["loss"] / self.gradient_accumulation_steps
+
+        if not skip_backward:
+            loss.backward()
+            # self.scaler.scale(loss).backward()
 
         return (
-            loss.item(),
-            metrics_dict["median_rep_error"].item(),
-            outputs["sc"].max().item(),
-            outputs["sc"].min().item(),
+            loss,  # Tensor
+            metrics_dict["median_rep_error"],
+            outputs["sc"].max(),
+            outputs["sc"].min(),
         )
 
     def get_gl_descriptors(self):
-        if self.options.debug_mode:
-            print("Using netvlad")
+        if self.cfg.debug_mode:
             db_desc = np.load(self.dataset.config.data / "train/desc_salad.npy")
             test_desc = np.load(self.dataset.config.data / "test/desc_salad.npy")
         else:
-            if self.options.use_salad:
+            if self.cfg.use_salad:
                 db_desc = np.load(self.dataset.config.data / "train/desc_salad.npy")
                 test_desc = np.load(self.dataset.config.data / "test/desc_salad.npy")
             else:
@@ -640,16 +678,16 @@ class TrainerAachen(BaseTrainer):
 
     def create_dataset(self):
         self.encoder = get_encoder(
-            pca_path=str(self.options.scene / self.options.pca_path),
-            model_type=self.options.local_desc,
+            pca_path=str(self.cfg.scene / self.cfg.pca_path),
+            model_type=self.cfg.local_desc,
         )
         self.encoder.cuda()
         self.encoder.eval()
         return get_dataset(
             self.encoder,
-            root_ds=self.options.scene,
-            feat_name_train=self.options.feat_name,
-            feat_name_test=self.options.feat_name_test,
+            root_ds=self.cfg.scene,
+            feat_name_train=self.cfg.feat_name,
+            feat_name_test=self.cfg.feat_name_test,
         )
 
     def test_model(self):
@@ -663,7 +701,19 @@ class TrainerAachen(BaseTrainer):
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
 
+        query_stems = [du.split("/")[-1] for du in self.test_dataset.rgb_files]
+        utils.read_csv_to_dict("checkpoints/retrieval_global.csv")
+        dict_ = utils.read_csv_to_dict("checkpoints/retrieval_reranked.csv")
         self.n_neighbors = 10
+        top_k_retrievals = [dict_[du][: self.n_neighbors] for du in query_stems]
+        stem2id = {
+            k2.split("/")[-1].split(".")[0]: k1
+            for k1, k2 in enumerate(self.dataset.rgb_files)
+        }
+        top_k_retrievals = [
+            [stem2id.get(du2.split(".")[0], 0) for du2 in du] for du in top_k_retrievals
+        ]
+
         emb, db_desc, test_desc, val_desc = self.get_gl_descriptors()
 
         from nanopq import PQ
@@ -679,11 +729,171 @@ class TrainerAachen(BaseTrainer):
             test_desc,
             write_gt_poses=True,
             scene="outdoor",
+            all_indices=top_k_retrievals,
             # no_db_desc=True,
         )
 
+    def test_model_train_set(self):
+        train_config = CamLocDatasetConfig(
+            data=self.cfg.scene,
+            split="train",
+            feat_name=self.cfg.feat_name,
+            num_decoder_clusters=50,
+        )
 
-if __name__ == "__main__":
+        ds = train_config.setup(preprocess=self.encoder.preprocess)
+        device = "cuda"
+        ransac_opt = {
+            "max_reproj_error": 10,
+            "max_iterations": 10000,
+            "seed": self.base_seed,
+        }
+        _logger = logging.getLogger(__name__)
+        self.clear_training_buffer()
+
+        pool_results = []
+        C_global = self.global_feat_dim
+
+        testset_loader = DataLoader(ds, shuffle=False, num_workers=1)
+        final_results = []
+
+        metrics = defaultdict(list)
+        poses = defaultdict(list)
+        count = 0
+        with torch.no_grad():
+            for batch in tqdm(testset_loader, desc="Testing"):
+                image, idx = batch["image"].to(device, non_blocking=True), batch["idx"]
+                global_feat = batch["global_feat"].to(device, non_blocking=True)
+                if len(global_feat.shape) == 1:
+                    global_feat = global_feat.unsqueeze(0)
+                with autocast(enabled=self.cfg.use_half, device_type="cuda"):
+                    encoder_output = self.encoder.keypoint_features(
+                        {"image": image}, n=0
+                    )
+                    keypoints = encoder_output["keypoints"]
+                    descriptors = encoder_output["descriptors"]
+                    N, C_local = descriptors.shape
+                    gl_feat = torch.empty(
+                        (N, C_global + C_local), device=device
+                    )
+                    gl_feat[:, :C_global] = global_feat.expand(keypoints.shape[0], -1)
+                    gl_feat[:, C_global:] = descriptors
+
+                    scene_coords = self.head(
+                        {"features": gl_feat}
+                    )["sc"]
+
+                result = self.pose_estimation_helper(image, ransac_opt, batch, keypoints, scene_coords)
+
+                gt_pose, intrinsics, frame_name = (
+                    batch["pose"][0].numpy(),
+                    batch["intrinsics"][0].numpy(),
+                    batch["filename"][0],
+                )
+                final_results.append([frame_name, result])
+                for key in ("pose_q", "pose_t"):
+                    poses[key].append(result[key])
+                for key in ("t_err", "r_err", "inlier_ratio"):
+                    metrics[key].append(result[key])
+
+        final_results = []
+        for frame_name, knn_results in tqdm(pool_results):
+            knn_results = [res.get() for res in knn_results]
+            result = max(knn_results, key=lambda x: x["num_inliers"])
+            final_results.append([frame_name, result])
+            for key in ("pose_q", "pose_t"):
+                poses[key].append(result[key])
+            for key in ("t_err", "r_err", "inlier_ratio"):
+                metrics[key].append(result[key])
+        acc_thresh = {
+            "outdoor": ((5, 10), (0.5, 5), (0.25, 2)),
+            "indoor": ((1, 5), (0.25, 2), (0.1, 1)),
+        }
+
+        # 1. Prepare a dictionary for W&B logging
+        test_metrics_to_log = {}
+
+        for t, r in acc_thresh["outdoor"]:
+            acc = (np.array(metrics["t_err"]) < t) & (
+                    np.array(metrics["r_err"]) < r
+            )
+            acc_percent = acc.mean() * 100
+            _logger.info(f"Accuracy: {t}m/{r}deg: {acc_percent:.1f}%")
+
+            # Log each threshold specifically
+            test_metrics_to_log[f"test/acc_{t}m_{r}deg"] = acc_percent
+
+        median_rErr = np.median(metrics["r_err"])
+        median_tErr = np.median(metrics["t_err"]) * 100
+        mean_inliers = np.mean(metrics["inlier_ratio"])
+
+        _logger.info(f"Median Error: {median_rErr:.1f}deg, {median_tErr:.1f}cm")
+        _logger.info(f"Mean Inliers: {mean_inliers:.2f}")
+
+        output_h5_path = Path("outputs/model_outputs.h5")
+
+        with h5py.File(output_h5_path, "w") as f:
+            # Create groups to organize data nicely
+            metrics_group = f.create_group("metrics")
+            for key, val in metrics.items():
+                metrics_group.create_dataset(key, data=np.array(val))
+
+            poses_group = f.create_group("poses")
+            for key, val in poses.items():
+                poses_group.create_dataset(key, data=np.array(val))
+
+            # Handle frame-specific string mappings and complex results
+            results_group = f.create_group("final_results")
+            for frame_name, res in final_results:
+                # Create a subgroup for each frame using its name
+                # HDF5 doesn't like complex types, so flat dictionaries work best
+                frame_group = results_group.create_group(str(frame_name))
+                for k, v in res.items():
+                    if isinstance(v, (np.ndarray, list)):
+                        frame_group.create_dataset(k, data=np.array(v))
+                    elif isinstance(v, (int, float, str)):
+                        frame_group.attrs[k] = v  # store scalars as attributes
+
+        _logger.info(f"Successfully saved outputs to {output_h5_path}")
+
+
+
+@hydra.main(version_base=None, config_path="configs", config_name="config")
+def main(cfg: DictConfig):
+    # Handle Debug Mode Overrides
+    if cfg.debug_mode == 1:
+        cfg = OmegaConf.to_container(cfg, resolve=True)
+        cfg["training_buffer_size"] = 5000
+        cfg["batch_size"] = 512
+        cfg["max_iterations"] = 100
+        cfg = OmegaConf.create(cfg)
+
+    # Initialize W&B
+    # It automatically captures the Hydra config
+    wandb_mode = "disabled" if cfg.debug_mode == 1 else cfg.wandb.mode
+    wandb.init(
+        project=cfg.wandb.project,
+        name=cfg.wandb.name,
+        dir=cfg.wandb.dir,
+        mode=wandb_mode,
+        config=OmegaConf.to_container(cfg, resolve=True),
+    )
+
+    trainer = TrainerAachen(cfg)
+
+    if not cfg.test_mode:
+        trainer.train()
+    trainer.test_model()
+
+    if cfg.debug_mode == 1:
+        wandb.finish()
+        sys.exit()
+
+    # Finish the W&B run
+    wandb.finish()
+
+
+def main_debug():
     options = get_options()
     debug = options.debug_mode == 1
     if debug:
@@ -692,10 +902,12 @@ if __name__ == "__main__":
         options.max_iterations = 100
         trainer = TrainerAachen(options)
         trainer.dump_dir = "checkpoints"
+        trainer.cfg.focus_tune = True
         trainer.train()
         trainer.test_model()
         sys.exit()
 
-    trainer = TrainerAachen(options)
-    trainer.train()
-    trainer.test_model()
+
+if __name__ == "__main__":
+    # main_debug()
+    main()

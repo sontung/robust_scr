@@ -1,22 +1,37 @@
-#!/bin/bash -l
-#PBS -N aachen_main_mem
-#PBS -l select=1:ncpus=20:ngpus=1:mem=50GB:gpu_id=H100
-#PBS -l walltime=20:00:00
-#PBS -j oe
+#!/bin/bash
+#SBATCH --job-name=best
+#SBATCH --partition=main
+#SBATCH --nodelist=worker-5
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --gpus=nvidia_h100_80gb_hbm3:1
+#SBATCH --cpus-per-task=10
+#SBATCH --mem=64G
+#SBATCH --time=24:00:00
+#SBATCH --output=%3j_%x.out
+#SBATCH --error=%3j_%x.err
 
-set -e  # Exit on error
+SCENE_PATH=/mnt/data/sftp/data/tungns30/aachen10
+PIX="/home/tungns30/.pixi/bin/pixi"
+MANIFEST="/home/tungns30/robust_scr/pixi.toml"
 
-# Note: gputype line is optional! Delete if any gpu is fine.
+cd /home/tungns30/work/next_gen_scr
 
-# Activate your conda environment (should already be created and all packages installed)
-conda activate scrstudio
+CMD="$PIX run --manifest-path $MANIFEST python"
 
-SCENE_PATH=../scrstudio_exp/data/data/aachen
+#$CMD train_agg_aachen.py \
+#  ds_path=/mnt/data/sftp/data/tungns30/aachen10 \
+#  batch_size=128 \
+#  model_name='desc_b${batch_size}_lr${lr}_m${margin_t}' \
+#  lr=1e-3 \
+#  margin_t=0.9 \
 
-cd /home/n11373598/work/glace_experiment
-python train_agg_aachen.py $SCENE_PATH 0 desc_aachen 128 10000 0 16 1e-5 9e-10 0 0
-
-python -u ace_trainer_with_loftr2.py  --scene $SCENE_PATH --global_feat 1 --use_aug 1 --iter_output 1000000 --depth_target 12 --feat_name checkpoints/desc_aachen.npy  --feat_name_test checkpoints/desc_aachen_test.npy   --training_buffer_size 128000000 --max_iterations 100000 --batch_size 320000 --graph_aug 1 --map_scale_factor 1 --use_half 1 --focus_tune 1 --grad_acc 2 --output_map_file head_main.pth
-
-#python -u trainer_with_aachen.py  --scene $SCENE_PATH --global_feat 1 --use_aug 1 --iter_output 1000000 --depth_target 12 --feat_name checkpoints/desc_dino.npy  --feat_name_test checkpoints/desc_dino_test.npy   --training_buffer_size 128000000 --max_iterations 100000 --batch_size 320000 --graph_aug 1 --map_scale_factor 1 --use_half 1 --focus_tune 1 --grad_acc 2 --output_map_file head_aachen.pth
-#python -u ace_trainer_with_aachen_fast.py  --scene $SCENE_PATH --global_feat 1 --use_aug 1 --iter_output 1000000 --depth_target 12 --feat_name checkpoints/desc_dino.npy  --feat_name_test checkpoints/desc_dino_test.npy   --training_buffer_size 32000000 --max_iterations 100000 --batch_size 40960 --graph_aug 1 --map_scale_factor 1 --use_half 1 --focus_tune 1 --grad_acc 2 --output_map_file head_aachen.pth
+$CMD trainer_with_aachen.py \
+  scene=$SCENE_PATH \
+  feat_name=checkpoints/desc_b128_lr0.003_m0.5.npy \
+  feat_name_test=checkpoints/desc_b128_lr0.003_m0.5_test.npy \
+  focus_tune=True \
+  wandb.mode=online \
+  +git_hash=$COMMIT_ID \
+  reuse_buffer=False \
+  output_map_file=test.pth

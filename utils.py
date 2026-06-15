@@ -1,4 +1,5 @@
 import argparse
+import csv
 import logging
 import math
 import os
@@ -245,6 +246,17 @@ def resize_image_by_hloc(image, size, interp):
     else:
         raise ValueError(f"Unknown interpolation {interp}.")
     return resized
+
+
+def read_csv_to_dict(filepath):
+    with open(filepath, newline="") as f:
+        reader = csv.DictReader(f)
+        key_col = reader.fieldnames[0]
+        result = {}
+        for row in reader:
+            key = row[key_col]
+            result[key] = [v for k, v in row.items() if k != key_col]
+        return result
 
 
 def read_and_preprocess(name, conf, image=None):
@@ -913,17 +925,441 @@ def run_salad_model(ds2, image_root_dir):
     np.save(checkpoint_dir, mat)
 
 
+def inspect_gl_descriptors(salad_train, salad_test, ds, ds2):
+    train_vecs = np.ascontiguousarray(salad_train, dtype=np.float32)
+    test_vecs = np.ascontiguousarray(salad_test, dtype=np.float32)
+
+    dim = train_vecs.shape[1]
+
+    # --- Build index ---
+    # Use L2 distance; swap for faiss.IndexFlatIP for cosine (after L2-norm)
+    index = faiss.IndexFlatL2(dim)
+    index.add(train_vecs)
+
+    distances, indices = index.search(test_vecs, 1)
+    indices = indices.flatten()
+    pos0 = ds.pose_values[:, :3, 3]
+    pos1 = ds2.pose_values[:, :3, 3]
+    err = np.mean(np.abs(pos0[indices] - pos1), 1)
+    r1 = np.mean(err < 1) * 100
+    r5 = np.mean(err < 5) * 100
+    print(f"Global descriptors")
+    print(f"  Recall @ 1m  : {r1:.2f}%")
+    print(f"  Recall @ 5m  : {r5:.2f}%")
+
+
+def draw_feature_matches_cv2(uv0, uv1, name0, name1, out_path):
+    """
+    Draw feature matches using **only OpenCV** and save the output image.
+
+    uv0: (N,2) keypoints in image 0
+    uv1: (N,2) keypoints in image 1
+    name0, name1: image paths
+    out_path: where to save the visualization
+    """
+
+    # Load images
+    img0 = cv2.imread(name0)
+    img1 = cv2.imread(name1)
+
+    if img0 is None:
+        raise ValueError(f"Cannot load image: {name0}")
+    if img1 is None:
+        raise ValueError(f"Cannot load image: {name1}")
+
+    h0, w0 = img0.shape[:2]
+    h1, w1 = img1.shape[:2]
+
+    # Canvas to place images side-by-side
+    h = max(h0, h1)
+    canvas = np.zeros((h, w0 + w1, 3), dtype=np.uint8)
+
+    canvas[:h0, :w0] = img0
+    canvas[:h1, w0 : w0 + w1] = img1
+
+    # Shift uv1 x-coordinates to match the concatenated image
+    uv1_shifted = uv1.copy()
+    uv1_shifted[:, 0] += w0
+
+    # Draw matches
+    for p0, p1 in zip(uv0, uv1_shifted):
+        color = tuple(np.random.randint(0, 255, 3).tolist())
+
+        p0 = tuple(map(int, p0))
+        p1 = tuple(map(int, p1))
+
+        cv2.line(canvas, p0, p1, color, 1, cv2.LINE_AA)
+        cv2.circle(canvas, p0, 3, color, -1, cv2.LINE_AA)
+        cv2.circle(canvas, p1, 3, color, -1, cv2.LINE_AA)
+
+    # Save output file
+    cv2.imwrite(out_path, canvas)
+
+
+def draw_feature_matches_cv2_w_images(uv0, uv1, img0, img1, out_path):
+
+    h0, w0 = img0.shape[:2]
+    h1, w1 = img1.shape[:2]
+
+    # Canvas to place images side-by-side
+    h = max(h0, h1)
+    canvas = np.zeros((h, w0 + w1, 3), dtype=np.uint8)
+
+    canvas[:h0, :w0] = img0
+    canvas[:h1, w0 : w0 + w1] = img1
+
+    # Shift uv1 x-coordinates to match the concatenated image
+    uv1_shifted = uv1.copy()
+    uv1_shifted[:, 0] += w0
+
+    # Draw matches
+    for p0, p1 in zip(uv0, uv1_shifted):
+        color = tuple(np.random.randint(0, 255, 3).tolist())
+
+        p0 = tuple(map(int, p0))
+        p1 = tuple(map(int, p1))
+
+        cv2.line(canvas, p0, p1, color, 1, cv2.LINE_AA)
+        cv2.circle(canvas, p0, 3, color, -1, cv2.LINE_AA)
+        cv2.circle(canvas, p1, 3, color, -1, cv2.LINE_AA)
+
+    # Save output file
+    cv2.imwrite(out_path, canvas)
+
+
+def check_npy_determinism(path, array, atol=1e-6):
+    path = Path(path)
+
+    if not path.exists():
+        print(f"[NEW] {path} does not exist yet.")
+        return
+
+    try:
+        existing = np.load(path)
+
+        if existing.shape != array.shape:
+            print(f"[DIFF SHAPE] {path}: {existing.shape} vs {array.shape}")
+            return
+
+        if np.allclose(existing, array, atol=atol):
+            print(f"[DETERMINISTIC] {path} matches existing file.")
+        else:
+            max_diff = np.max(np.abs(existing - array))
+            print(f"[NON-DETERMINISTIC] {path} differs (max diff: {max_diff:.3e})")
+
+    except Exception as e:
+        print(f"[ERROR] Could not compare {path}: {e}")
+
+
+def get_patch_centres(image_ori, patch_size=14, proc_w=224, proc_h=224):
+
+    ORIG_H, ORIG_W = image_ori.shape[:2]
+    assert ORIG_H > 10 and ORIG_W > 10
+    num_ph = proc_h // patch_size
+    num_pw = proc_w // patch_size
+    grid_y, grid_x = np.meshgrid(np.arange(num_ph), np.arange(num_pw), indexing="ij")
+
+    cx = (grid_x.flatten() * patch_size + patch_size / 2) * (ORIG_W / proc_w)
+    cy = (grid_y.flatten() * patch_size + patch_size / 2) * (ORIG_H / proc_h)
+
+    return np.stack([cx, cy], axis=1).astype(np.float32)  # [P, 2]
+
+
+def patch_mask_overlap(
+    pixel_xy_topleft, masks, patch_size_x, patch_size_y, iou_thresh=0.3
+):
+    """
+    pixel_xy_topleft : float32 [P, 2]  patch top-left corners (x, y)
+    masks            : bool [N, H, W]
+    Returns          : bool [P], float32 [P] max overlap ratio per patch
+    """
+    H, W = masks.shape[1], masks.shape[2]
+    px0 = np.clip(pixel_xy_topleft[:, 0].astype(int), 0, W - 1)
+    py0 = np.clip(pixel_xy_topleft[:, 1].astype(int), 0, H - 1)
+    px1 = np.clip((pixel_xy_topleft[:, 0] + patch_size_x).astype(int), 0, W)
+    py1 = np.clip((pixel_xy_topleft[:, 1] + patch_size_y).astype(int), 0, H)
+
+    patch_area = patch_size_x * patch_size_y
+    max_overlap = np.zeros(len(pixel_xy_topleft), dtype=np.float32)
+
+    for mask in masks:
+        for i in range(len(pixel_xy_topleft)):
+            patch_region = mask[py0[i] : py1[i], px0[i] : px1[i]]
+            inter = patch_region.sum()
+            if inter == 0:
+                continue
+            max_overlap[i] = max(max_overlap[i], inter / patch_area)
+
+    return max_overlap >= iou_thresh, max_overlap
+
+
+def process_sam3_masks(masks, dino_patch_size=14, proc_w=224, proc_h=224):
+    N, H_m, W_m = masks.shape  # native mask resolution
+
+    mask_areas = np.sum(masks, axis=(1, 2))
+    sorted_m_indices = np.argsort(mask_areas)
+
+    processed_pixels = np.zeros((H_m, W_m), dtype=bool)
+    observations = []
+    m_indices = []
+    for m_idx in sorted_m_indices:
+        current_mask = masks[m_idx] > 0
+        unique_mask_region = current_mask & ~processed_pixels
+
+        original_pixel_count = mask_areas[m_idx]
+        if original_pixel_count == 0:
+            continue
+
+        unique_pixel_count = np.sum(unique_mask_region)
+        if (unique_pixel_count / original_pixel_count) < 0.5:
+            continue
+
+        processed_pixels |= current_mask
+
+        ORIG_H, ORIG_W = unique_mask_region.shape[:2]
+        patch_size_x = dino_patch_size * (ORIG_W / proc_w)
+        patch_size_y = dino_patch_size * (ORIG_H / proc_h)
+
+        # get_patch_centres returns centres — shift to top-left for bbox IoU
+        pixel_xy = get_patch_centres(
+            unique_mask_region, patch_size=dino_patch_size, proc_w=proc_w, proc_h=proc_h
+        )
+        pixel_xy_topleft = pixel_xy - np.array([patch_size_x / 2, patch_size_y / 2])
+
+        inside, overlap_scores = patch_mask_overlap(
+            pixel_xy_topleft,
+            unique_mask_region[None],
+            patch_size_x,
+            patch_size_y,
+            iou_thresh=0.2,
+        )
+
+        # obs = {
+        #     "mask": unique_mask_region.astype(float)*255,
+        #     # "chosen_patches": inside.astype(int).tolist(),
+        # }
+        observations.append(unique_mask_region.astype(float) * 255)
+        m_indices.append(m_idx)
+
+    return observations, m_indices
+
+
+def find_dino_patch_coords(
+    unique_mask_region, dino_patch_size=14, proc_w=224, proc_h=224
+):
+    ORIG_H, ORIG_W = unique_mask_region.shape[:2]
+    patch_size_x = dino_patch_size * (ORIG_W / proc_w)
+    patch_size_y = dino_patch_size * (ORIG_H / proc_h)
+
+    # get_patch_centres returns centres — shift to top-left for bbox IoU
+    pixel_xy = get_patch_centres(
+        unique_mask_region, patch_size=dino_patch_size, proc_w=proc_w, proc_h=proc_h
+    )
+    pixel_xy_topleft = pixel_xy - np.array([patch_size_x / 2, patch_size_y / 2])
+
+    inside, overlap_scores = patch_mask_overlap(
+        pixel_xy_topleft,
+        unique_mask_region[None],
+        patch_size_x,
+        patch_size_y,
+        iou_thresh=0.2,
+    )
+    return inside, pixel_xy_topleft[inside]
+
+
+def visualize_stem_masks(
+    image, masks, patches, dino_patch_size=14, proc_w=224, proc_h=224
+):
+    """
+    Visualizes masks with unique random colors and patch selections on a given input image.
+
+    Args:
+        image (np.ndarray): The input image in BGR format [H, W, 3].
+        masks (np.ndarray): Boolean or uint8 mask array [N, H, W].
+        patches (list or np.ndarray): Bounding patch arrays or coordinates.
+        dino_patch_size (int): Base patch size dimension. Defaults to 14.
+        proc_w (int): Processing width baseline used for scaling. Defaults to 224.
+        proc_h (int): Processing height baseline used for scaling. Defaults to 224.
+
+    Returns:
+        np.ndarray: The visualized image with mask overlays and patch bounding boxes.
+    """
+    # Create a deep copy to prevent mutating the original input array in place
+    vis = image.copy()
+    ORIG_H, ORIG_W = vis.shape[:2]
+
+    # Calculate dynamic patch scaling ratios
+    patch_size_x = dino_patch_size * (ORIG_W / proc_w)
+    patch_size_y = dino_patch_size * (ORIG_H / proc_h)
+
+    # 1. Draw masks as a semi-transparent overlay with random colors
+    if masks is not None and len(masks) > 0:
+        overlay = vis.copy()
+
+        for mask in masks:
+            mask_bool = mask > 0
+            if not np.any(mask_bool):
+                continue
+
+            # Generate a random vibrant BGR color (avoiding completely dark colors)
+            color_array = np.random.randint(50, 256, size=3, dtype=np.uint8)
+            color = (int(color_array[0]), int(color_array[1]), int(color_array[2]))
+
+            # Blend the random color onto the overlay canvas copy
+            overlay[mask_bool] = (vis[mask_bool] * 0.4 + color_array * 0.6).astype(
+                np.uint8
+            )
+
+            # Draw contours using the matching color for crisp structural boundaries
+            contours, _ = cv2.findContours(
+                mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+            )
+            cv2.drawContours(overlay, contours, -1, color, 2)
+
+        vis = overlay
+
+    # 2. Draw selected bounding patch boxes
+    if patches is not None:
+        for pixel_xy in patches:
+            for cx, cy in pixel_xy.astype(int):
+                px0, py0 = cx, cy
+                px1 = int(cx + patch_size_x)
+                py1 = int(cy + patch_size_y)
+                # Clip values internally to safely handle edge boundaries near borders
+                px1 = min(px1, ORIG_W)
+                py1 = min(py1, ORIG_H)
+                cv2.rectangle(vis, (px0, py0), (px1, py1), (220, 0, 0), 1)
+
+    return vis
+
+
+
+
+
+def visualize_topk_retrievals(
+    obs_i, list_obs_j, path_i, list_path_j, output_dir, name="", write_img=False,
+):
+    """Draws a query image and its top-k retrievals side-by-side with mask overlays.
+
+    Stacked right-to-left from query: [ Query Image | Retrieval 1 | Retrieval 2 | ... ]
+    """
+    os.makedirs(output_dir, exist_ok=True)
+
+    # 1. Load the main query image
+    img_i = cv2.imread(path_i)
+    if img_i is None:
+        print(f"⚠️ Failed to load query image: {path_i}")
+        return
+
+    # Ensure inputs are lists for iteration
+    if not isinstance(list_path_j, list):
+        list_path_j = [list_path_j]
+    if not isinstance(list_obs_j, list):
+        list_obs_j = [list_obs_j]
+
+    DINO_GRID = 16
+    h_target = 600  # Standardized height for stacking
+
+    def overlay_dino_bbox(img, obs, color, thickness=5):
+        H, W = img.shape[:2]
+        cell_h = H / DINO_GRID
+        cell_w = W / DINO_GRID
+
+        # Reshape the 1D list of 256 bits back into its true 16x16 spatial matrix layout
+        chosen_mask_2d = np.array(obs["chosen_patches"]).reshape(
+            DINO_GRID, DINO_GRID
+        )
+
+        # Find coordinates where patches are active
+        grid_rows, grid_cols = np.where(chosen_mask_2d > 0)
+        num_active_patches = len(grid_rows)
+
+        # Draw a tight bounding box around the active patches if any exist
+        if num_active_patches > 0:
+            min_r, max_r = np.min(grid_rows), np.max(grid_rows)
+            min_c, max_c = np.min(grid_cols), np.max(grid_cols)
+
+            # Map back to continuous absolute image pixel space smoothly
+            x0 = int(round(min_c * cell_w))
+            y0 = int(round(min_r * cell_h))
+            x1 = int(round((max_c + 1) * cell_w))
+            y1 = int(round((max_r + 1) * cell_h))
+
+            # Draw the bounding box outline
+            cv2.rectangle(img, (x0, y0), (x1, y1), color, thickness, cv2.LINE_AA)
+
+        return img
+
+    def overlay_dino_patches(img, obs, patch_color, grid_color=(60, 60, 60)):
+        H, W = img.shape[:2]
+        cell_h = H / DINO_GRID
+        cell_w = W / DINO_GRID
+
+        # Patch Overlay Layer
+        patch_overlay = img.copy()
+        chosen_mask_2d = np.array(obs["chosen_patches"]).reshape(
+            DINO_GRID, DINO_GRID
+        )
+        grid_rows, grid_cols = np.where(chosen_mask_2d > 0)
+        num_active_patches = len(grid_rows)
+
+        for pr, pc in zip(grid_rows, grid_cols):
+            x0 = int(round(pc * cell_w))
+            y0 = int(round(pr * cell_h))
+            x1 = int(round((pc + 1) * cell_w))
+            y1 = int(round((pr + 1) * cell_h))
+            cv2.rectangle(
+                patch_overlay, (x0, y0), (x1, y1), patch_color, cv2.FILLED
+            )
+
+        # Alpha blend
+        img = cv2.addWeighted(img, 0.75, patch_overlay, 0.25, 0)
+
+        return img
+
+    # Start our canvas list with the Query Image on the far left
+    tiles_to_stack = []
+
+    # 2. Process the query image (img_i)
+    img_i = overlay_dino_patches(img_i, obs_i, patch_color=(0, 220, 0))
+    img_i = overlay_dino_bbox(img_i, obs_i, (0, 0, 255))
+    w_i = int(img_i.shape[1] * (h_target / img_i.shape[0]))
+    tiles_to_stack.append(cv2.resize(img_i, (w_i, h_target)))
+
+    # 3. Process and append all retrieval images (img_j) to the right
+    for idx, (path_j, obs_j) in enumerate(zip(list_path_j, list_obs_j)):
+        img_j = cv2.imread(path_j)
+        if img_j is None:
+            print(f"⚠️ Failed to load retrieval image at index {idx}: {path_j}")
+            continue
+
+        img_j = overlay_dino_patches(img_j, obs_j, patch_color=(0, 100, 255))
+        img_j = overlay_dino_bbox(img_j, obs_j, (0, 0, 255))
+
+        # Resize and append
+        w_j = int(img_j.shape[1] * (h_target / img_j.shape[0]))
+        tiles_to_stack.append(cv2.resize(img_j, (w_j, h_target)))
+
+    # 4. Horizontally stack all processed canvases
+    if len(tiles_to_stack) > 1:
+        final_tile = np.hstack(tiles_to_stack)
+        out_name = f"{name}.jpg"
+        if write_img:
+            cv2.imwrite(os.path.join(output_dir, out_name), final_tile)
+        return final_tile
+    else:
+        print("⚠️ No valid images to stack.")
+        return None
+
 if __name__ == "__main__":
-    (xyz_arr, image2points,
-     image2name, rgb_arr) = read_nvm_file(
+    (xyz_arr, image2points, image2name, rgb_arr) = read_nvm_file(
         "/home/n11373598/work/scrstudio/data/aachen/aachen_cvpr2018_db.nvm",
         return_rgb=True,
     )
 
-    (xyz_arr2, image2points2,
-     image2name, rgb_arr) = read_nvm_file(
+    (xyz_arr2, image2points2, image2name, rgb_arr) = read_nvm_file(
         "/home/n11373598/hpc-home/work/descriptor-disambiguation/datasets/aachen_v1.1/3D-models/aachen_v_1_1/aachen_v_1_1.nvm",
         return_rgb=True,
     )
-    (xyz_arr2.shape[0]-xyz_arr.shape[0])/xyz_arr.shape[0]
+    (xyz_arr2.shape[0] - xyz_arr.shape[0]) / xyz_arr.shape[0]
     print()

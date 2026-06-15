@@ -132,8 +132,8 @@ class SampleDataset(torch.utils.data.Dataset):
 
         self.rgb_files = ds.rgb_files
 
-        salad_db_dir = root_dir / "../desc_salad_db.npy"
-        self.get_pretrained_gl_desc(root_dir, salad_db_dir, ds)
+        # salad_db_dir = root_dir / "../desc_salad_db.npy"
+        # self.get_pretrained_gl_desc(root_dir, salad_db_dir, ds)
 
         self.image_transform = transforms.Compose(
             [
@@ -148,46 +148,7 @@ class SampleDataset(torch.utils.data.Dataset):
             ]
         )
         if train:
-            self.compute_hard_mining_probs()
             self.all_images = self.read_all_images()
-
-    def compute_hard_mining_probs(self):
-        self.prob = self.compute_dist_matrix()
-        self.positive_prob = self.prob[self.data > 0.5]
-        self.soft_negative_prob = self.prob[(self.data >= 0.25) & (self.data <= 0.5)]
-
-        self.num_pairs = len(self.all_indices) * len(self.all_indices)
-        self.negative_prob, self.hard_negative_pairs = self.pre_mine_hard_negatives()
-        self.negative_prob = self.negative_prob / self.negative_prob.sum()
-
-    def pre_mine_hard_negatives(self):
-
-        desc = self.salad_db_desc.numpy().astype(np.float32)
-        cpu_index = faiss.IndexFlatL2(desc.shape[1])
-        cpu_index.add(desc)
-        distances, indices = cpu_index.search(desc, 21)
-
-        first_col = indices[:, 0:1]  # shape (4328, 1)
-        rest_cols = indices[:, 1:]  # shape (4328, 20)
-        first_col_repeated = np.repeat(
-            first_col, rest_cols.shape[1], axis=1
-        )  # (4328, 20)
-        pairs = np.stack([first_col_repeated, rest_cols], axis=2)  # (4328, 20, 2)
-        pairs = pairs.reshape(-1, 2)
-        paired_distances = distances[:, 1:].reshape(-1)
-
-        scores = [self.csr_arr[pair[0], pair[1]] for pair in pairs]
-        scores = np.array(scores)
-        mask = scores < 0.2
-        pairs = pairs[mask]
-        paired_distances = paired_distances[mask]
-        all_distances = torch.tensor(paired_distances, dtype=torch.float32)
-        all_pairs = torch.tensor(pairs, dtype=torch.long)
-        epsilon = 1e-8  # to avoid division by zero
-
-        # Invert distances to make small distances correspond to high scores
-        inv_scores = 1.0 / (all_distances + epsilon)
-        return inv_scores, all_pairs.T
 
     @staticmethod
     def setup_dataset(root_dir):
@@ -201,29 +162,8 @@ class SampleDataset(torch.utils.data.Dataset):
         ds = train_config.setup()
         return ds
 
-    def get_pretrained_gl_desc(self, root_dir, salad_db_dir, ds):
-        if not salad_db_dir.exists():
-            model = FullModel(pretrained=True)
-            model.cuda()
-            model.eval()
-            self.salad_db_desc = process(ds, model, root_dir / "../../..")
-            np.save(salad_db_dir, self.salad_db_desc)
-        else:
-            self.salad_db_desc = np.load(salad_db_dir)
-        self.salad_db_desc = torch.tensor(self.salad_db_desc)
 
-    def compute_dist_matrix(self):
-        results = []
-        B = 4096
-        for i in range(0, self.edge_index.shape[1], B):
-            idx0 = self.edge_index[0, i : i + B]
-            idx1 = self.edge_index[1, i : i + B]
-            desc0 = self.salad_db_desc[idx0]
-            desc1 = self.salad_db_desc[idx1]
-            sq_norm = ((desc0 - desc1) ** 2).sum(dim=1)
-            results.append(sq_norm)
-        distance_matrix = torch.cat(results, dim=0)
-        return distance_matrix
+
 
     def __len__(self):
         return self.nb_iterations
@@ -256,37 +196,6 @@ class SampleDataset(torch.utils.data.Dataset):
             imgs.append(image)
         return torch.stack(imgs)
 
-    def compute_dist(self, i0, i1):
-        dist = self.salad_db_desc[i0] - self.salad_db_desc[i1]
-        return torch.dot(dist, dist)
-
-    def sample_hard_pairs(self):
-        nb_positives = self.batch_size // 3
-
-        pos_pairs, pos_scores = extract(
-            torch.multinomial(self.positive_prob, nb_positives),
-            self.positive_pairs,
-            self.positive_scores,
-        )
-
-        soft_neg_pairs, soft_neg_scores = extract(
-            torch.multinomial(self.soft_negative_prob, nb_positives),
-            self.soft_negative_pairs,
-            self.soft_negative_scores,
-        )
-
-        nb_negatives = self.batch_size - nb_positives * 2
-        neg_pairs, neg_scores = extract(
-            torch.multinomial(self.negative_prob, nb_negatives),
-            self.hard_negative_pairs,
-            None,
-        )
-
-        batch = torch.cat(
-            [pos_pairs, neg_pairs, soft_neg_pairs], dim=1
-        )  # shape: (batch_size, 2)
-        all_scores = torch.cat([pos_scores, neg_scores, soft_neg_scores], dim=0)
-        return batch, all_scores
 
     def batch_sampling1(self):
         batch, all_scores = [], []

@@ -5,14 +5,19 @@ import time
 from collections import defaultdict
 from datetime import datetime
 from multiprocessing import Pool
+from pathlib import Path
 
 import numpy as np
 import torch
+import wandb
+from omegaconf import DictConfig
+from pykdtree.kdtree import KDTree
 from torch import autocast
 from torch.cuda.amp import GradScaler
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
+import utils
 from utils import set_seed, pose_estimate
 from config_classes import PQKNN
 from networks import get_model
@@ -21,9 +26,9 @@ _logger = logging.getLogger(__name__)
 
 
 class BaseTrainer:
-    def __init__(self, options):
-
-        self.options = options
+    def __init__(self, cfg: DictConfig):
+        self.cfg = cfg
+        self.cfg.scene = Path(self.cfg.scene)
         device_id = 0
         self.device = torch.device("cuda", device_id)
         torch.cuda.set_device(device_id)
@@ -45,7 +50,7 @@ class BaseTrainer:
         self.sampling_generator.manual_seed(self.base_seed + 4095)
 
         # Generator used to permute the feature indices during each training epoch.
-        self.training_generator = torch.Generator()
+        self.training_generator = torch.Generator(device=self.device)
         self.training_generator.manual_seed(self.base_seed + 8191)
 
         # Generator for global feature noise
@@ -59,10 +64,17 @@ class BaseTrainer:
         self.val_dataset = None
         self.dataset, self.test_dataset = self.create_dataset()
 
+        utils.inspect_gl_descriptors(
+            self.dataset.global_feats,
+            self.test_dataset.global_feats,
+            self.dataset,
+            self.test_dataset,
+        )
+
         self.global_feat_dim = self.dataset.global_feat_dim
         self.global_feats = torch.tensor(
             self.dataset.global_feats,
-            dtype=(torch.float32, torch.float16)[self.options.use_half],
+            dtype=(torch.float32, torch.float16)[self.cfg.use_half],
             device=self.device,
         )
 
@@ -70,15 +82,13 @@ class BaseTrainer:
 
         # Gradient scaler in case we train with half precision.
         try:
-            self.scaler = torch.amp.GradScaler("cuda", enabled=self.options.use_half)
+            self.scaler = torch.amp.GradScaler("cuda", enabled=self.cfg.use_half)
         except AttributeError:
-            self.scaler = GradScaler(enabled=self.options.use_half)
+            self.scaler = GradScaler(enabled=self.cfg.use_half)
 
         # Compute total number of iterations.
-        self.iterations = self.options.max_iterations
-        self.iterations_output = (
-            self.options.iter_output
-        )  # print loss every n iterations
+        self.iterations = self.cfg.max_iterations
+        self.iterations_output = self.cfg.iter_output  # print loss every n iterations
 
         # Will be filled at the beginning of the training process.
         self.training_buffer = None
@@ -106,6 +116,56 @@ class BaseTrainer:
             gc.collect()
             torch.cuda.empty_cache()
 
+    def retrieve_gt_xyz(
+        self,
+        image_ori_B1HW,
+        frame_path,
+        uv_grid_arr,
+        gt_pose_inv_B44,
+        intrinsics_B33,
+        radius=5,
+    ):
+        # Get image dimensions from the actual tensor shape
+        _, H, W, _ = image_ori_B1HW.shape
+
+        image_id = self.name2id[frame_path[0]]
+        pid_list = self.image2points[image_id]
+        xyz = self.xyz_arr[pid_list]  # Assuming xyz_arr is a numpy array
+
+        # Project XYZ to Camera Coords
+        # Using @ for matrix multiplication is cleaner
+        xyz_homo = np.hstack([xyz, np.ones((xyz.shape[0], 1))]).T
+        cam_coords = gt_pose_inv_B44[0, :3].cpu().numpy() @ xyz_homo
+
+        # Project to Screen Space
+        uv_homo = intrinsics_B33[0].cpu().numpy() @ cam_coords
+        z = np.clip(uv_homo[2], 0.1, None)
+        uv = uv_homo[:2] / z
+        uv = uv.T
+
+        # Filter points actually landing within the image frame
+        in_frame = (uv[:, 0] >= 0) & (uv[:, 0] < W) & (uv[:, 1] >= 0) & (uv[:, 1] < H)
+
+        if np.sum(in_frame) < 10:
+            return torch.zeros(uv_grid_arr.shape[0], device="cuda"), None, None
+
+        # Match sampled keypoints to projected map points
+        tree = KDTree(uv[in_frame])
+        distances, indices = tree.query(uv_grid_arr)
+
+        # Create mask based on distance threshold
+        mask = distances < radius
+
+        # Extract depth and 3D coords for the matched points
+        # Note: we must index into the 'in_frame' subset of xyz
+        valid_xyz = xyz[in_frame]
+        valid_cam_coords = cam_coords[:, in_frame]
+
+        xyz_gt = valid_xyz[indices]
+        depths = valid_cam_coords[2, indices]
+
+        return torch.from_numpy(mask.astype(np.int32)).cuda(), depths, xyz_gt
+
     def train(self):
         """
         Main training method.
@@ -113,22 +173,29 @@ class BaseTrainer:
         Fills a feature buffer using the pretrained encoder and subsequently trains a scene coordinate regression head.
         """
 
-        max_iterations = self.options.max_iterations
+        max_iterations = self.cfg.max_iterations
         self.create_training_buffer()
 
-        if self.options.normalize_inputs:
+        if self.cfg.normalize_inputs:
             self.input_feat_mean = self.training_buffer["features"].mean()
             self.input_feat_std = self.training_buffer["features"].std()
             self.input_feat_min = self.training_buffer["features"].min()
             self.input_feat_max = self.training_buffer["features"].max()
 
-            local_feat = (self.training_buffer["features"] - self.input_feat_mean) / (self.input_feat_std + 1e-6)
-            local_feat = 2 * (local_feat - self.input_feat_min) / (self.input_feat_max - self.input_feat_min) - 1
+            local_feat = (self.training_buffer["features"] - self.input_feat_mean) / (
+                self.input_feat_std + 1e-6
+            )
+            local_feat = (
+                2
+                * (local_feat - self.input_feat_min)
+                / (self.input_feat_max - self.input_feat_min)
+                - 1
+            )
             self.training_buffer["features"] = local_feat
 
         pbar = tqdm(total=self.iterations, desc="Training")
 
-        while self.iteration < self.options.max_iterations:
+        while self.iteration < self.cfg.max_iterations:
             self.run_epoch(pbar, max_iterations=max_iterations)
         self.clear_training_buffer()
         self.save_model()
@@ -162,15 +229,12 @@ class BaseTrainer:
         print("Optimizer state is None")
         return 0
 
-
     def save_model(self):
         with torch.no_grad():
             for name, param in self.head.named_parameters():
                 if "weight" in name or "bias" in name:
                     param.data = param.data.half()
-        torch.save(
-            self.head.state_dict(), f"checkpoints/{self.options.output_map_file}"
-        )
+        torch.save(self.head.state_dict(), f"checkpoints/{self.cfg.output_map_file}")
         return
 
     def write_poses_to_file(self, poses):
@@ -199,7 +263,7 @@ class BaseTrainer:
     def diffuse_feature(self, features_bC):
         features_bC[:, : self.global_feat_dim] += torch.empty_like(
             features_bC[:, : self.global_feat_dim]
-        ).normal_(mean=0, std=self.options.feat_noise_std, generator=self.gn_generator)
+        ).normal_(mean=0, std=self.cfg.feat_noise_std, generator=self.gn_generator)
         features_bC[:, : self.global_feat_dim] = torch.nn.functional.normalize(
             features_bC[:, : self.global_feat_dim], dim=1
         )
@@ -226,7 +290,8 @@ class BaseTrainer:
         write_gt_poses=False,
         scene="indoor",
         no_db_desc=False,
-        max_samples=-1
+        max_samples=-1,
+        all_indices=None,
     ):
         pool = Pool(10)
         device = "cuda"
@@ -252,12 +317,14 @@ class BaseTrainer:
                 if no_db_desc:
                     global_feat = batch["global_feat"].to(device, non_blocking=True)
                 else:
-                    indices = knn.kneighbors(val_desc[idx])
+                    if all_indices is None:
+                        indices = knn.kneighbors(val_desc[idx])
+                    else:
+                        indices = all_indices[idx]
                     global_feat = emb[indices].to(device, non_blocking=True).squeeze(0)
                 if len(global_feat.shape) == 1:
                     global_feat = global_feat.unsqueeze(0)
-                with autocast(enabled=True, device_type="cuda"):
-
+                with autocast(enabled=self.cfg.use_half, device_type="cuda"):
                     encoder_output = self.encoder.keypoint_features(
                         {"image": image}, n=0
                     )
@@ -339,17 +406,64 @@ class BaseTrainer:
             self.write_poses_to_file(final_results)
 
         if testset_loader.dataset.gt_pose_avail:
+            # 1. Prepare a dictionary for W&B logging
+            test_metrics_to_log = {}
+
             for t, r in acc_thresh[scene]:
                 acc = (np.array(metrics["t_err"]) < t) & (
                     np.array(metrics["r_err"]) < r
                 )
-                _logger.info(f"Accuracy: {t}m/{r}deg: {acc.mean() * 100:.1f}%")
+                acc_percent = acc.mean() * 100
+                _logger.info(f"Accuracy: {t}m/{r}deg: {acc_percent:.1f}%")
+
+                # Log each threshold specifically
+                test_metrics_to_log[f"test/acc_{t}m_{r}deg"] = acc_percent
+
             median_rErr = np.median(metrics["r_err"])
             median_tErr = np.median(metrics["t_err"]) * 100
+            mean_inliers = np.mean(metrics["inlier_ratio"])
+
             _logger.info(f"Median Error: {median_rErr:.1f}deg, {median_tErr:.1f}cm")
-            _logger.info(f"Mean Inliers: {np.mean(metrics['inlier_ratio']):.2f}")
+            _logger.info(f"Mean Inliers: {mean_inliers:.2f}")
+
+            # 2. Add summary statistics to the dictionary
+            test_metrics_to_log.update(
+                {
+                    "test/median_r_err_deg": median_rErr,
+                    "test/median_t_err_cm": median_tErr,
+                    "test/mean_inlier_ratio": mean_inliers,
+                }
+            )
+
+            # 3. Send to WandB
+            wandb.log(test_metrics_to_log)
+
         pool.close()
         pool.join()
+
+    def pose_estimation_helper(self, image, ransac_opt, batch, keypoints, scene_coords):
+        scene_coords = scene_coords.cpu().numpy()
+
+        keypoints = keypoints.float().cpu()
+
+        gt_pose, intrinsics, frame_name = (
+            batch["pose"][0].numpy(),
+            batch["intrinsics"][0].numpy(),
+            batch["filename"][0],
+        )
+        keypoints_np = keypoints.numpy()
+
+        camera = {
+            "model": "PINHOLE",
+            "width": image.shape[3],
+            "height": image.shape[2],
+            "params": intrinsics[[0, 1, 0, 1], [0, 1, 2, 2]],
+        }
+        result = utils.pose_estimate(
+            keypoints_np, scene_coords, camera, ransac_opt, gt_pose
+        )
+
+        return result
 
     def test_model(self):
         with torch.no_grad():
