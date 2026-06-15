@@ -1,0 +1,91 @@
+# config.yaml
+defaults:
+  - _self_
+
+# Scene & Paths
+scene: "/mnt/data/sftp/data/tungns30/aachen10"
+db_dir: ""
+pca_path: "proc/pcad3LB_128.pth"
+local_desc: "dedode"
+output_map_file: "head_main.pth"
+focus_tune: false
+dump_dir: "/mnt/data/sftp/data/tungns30/aachen10_dump_folder"
+sam3_mask: "/home/vr/work/sign_based_loc/outputs/sam3_results_db.h5"
+sam3_mask_agg_cp: "/home/vr/work/sign_based_loc/outputs/latest.pth"
+mask_edges: "/home/vr/work/sign_based_loc/outputs/edges.json"
+mask_observations: "/home/vr/work/sign_based_loc/outputs/observations.json"
+
+# Model Architecture
+head_channels: 768
+num_head_blocks: 1
+mlp_ratio: 1.0
+num_decoder_clusters: 1
+use_homogeneous: true
+
+# Features & Global Settings
+global_feat: true
+use_salad: true
+feat_name: "checkpoints/desc_aachen0.npy"
+membership: "checkpoints/pose_overlap.npz"
+feat_name_test: "checkpoints/desc_aachen0_test.npy"
+feat_noise_std: 0.1
+normalize_inputs: false
+
+# Training Hyperparameters
+batch_size: 320000
+training_buffer_size: 128000000
+grad_acc: 2
+max_iterations: 100000
+iter_output: 1000000
+learning_rate_min: 0.0005
+learning_rate_max: 0.003
+samples_per_image: 1024
+use_half: true
+reuse_buffer: false
+
+# Loss Settings
+lambda_w: 0.5
+repro_loss_type: "dyntanh"
+repro_loss_schedule: "circle"
+repro_loss_hard_clamp: 1000
+repro_loss_soft_clamp: 50
+repro_loss_soft_clamp_min: 1
+depth_min: 0.1
+depth_target: 12
+depth_max: 1000
+
+# Augmentation
+use_aug: true
+graph_aug: true
+aug_rotation: 15
+aug_scale: 1.5
+image_resolution: 480
+depth_init: false
+
+patch_filter: true
+patch_prob_threshold: 0.5
+
+# Clustering
+num_clusters: null
+cluster_idx: null
+
+# Flags
+test_mode: false
+debug_mode: 0
+
+wandb:
+  project: "next_gen_scr"
+  # This dynamically takes the last part of the scene path for the name
+  name: "aachen_${scene}"
+  dir: "/mnt/data/sftp/data/tungns30/aachen10_dump_folder/"
+  # We handle 'mode' logic in Python, or set a default here:
+  mode: "online"
+
+hydra:
+  run:
+    # This saves everything into a folder named after your scene inside a 'logs' directory
+    dir: /mnt/data/sftp/data/tungns30/aachen10_dump_folder/hydra_logs/logs/${scene}/${now:%Y-%m-%d_%H-%M-%S}
+  sweep:
+    # This is for when you use the --multirun (-m) flag
+    dir: /mnt/data/sftp/data/tungns30/aachen10_dump_folder/hydra_logs/multirun/${scene}/${now:%Y-%m-%d_%H-%M-%S}
+    subdir: ${hydra.job.num}

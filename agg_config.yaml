@@ -1,0 +1,16 @@
+# conf/config.yaml
+ds_path: "/mnt/data/sftp/data/tungns30/aachen10"
+debug_mode: 0
+model_name: "desc_aachen0"
+batch_size: 64
+nb_iter: 10000
+hard_mining: 0
+nb_clusters: 16
+lr: 1e-3
+weight_decay: 9e-10
+cosine: 0
+nb_trainable_blocks: 0
+margin_t: 0.9
+dino_arch: "dinov2_vitb14"
+seed: 1000
+patch_cls: false
